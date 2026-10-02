@@ -45,7 +45,7 @@ Aobana source, Aobana 1.7 or later.
 | `nadeshiko_api.py` | the Nadeshiko API client |
 | `immersionkit_api.py` | the Immersion Kit client (paced to one request every 2 s), context media URLs, and its sentence rendering: bold, furigana, cleaning |
 | `anki_util.py`, `logger.py` | note/field helpers, the add-on's own log |
-| `config.json`, `manifest.json` | shipped defaults (the author's recommended settings: Nadeshiko's fallback off, Aobana's and Immersion Kit's on); the add-on's identity for Anki |
+| `config.json`, `manifest.json` | shipped defaults (the developer's recommended settings: Nadeshiko's fallback off, Aobana's and Immersion Kit's on); the add-on's identity for Anki |
 
 ## Credits
 

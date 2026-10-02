@@ -23,6 +23,7 @@
  "nadeshiko_cat_yt": true,
  "nadeshiko_require_media": false,
  "nadeshiko_bold": true,
+ "nadeshiko_bold_tail": true,
  "nadeshiko_furigana": false,
  "subs_base_url": "http://127.0.0.1:5010",
  "subs_project_dir": "",

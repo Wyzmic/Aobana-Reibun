@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 import requests
 _DOWNLOAD_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36'
-_API_USER_AGENT = 'AobanaReibun/1.0 (+https://nadeshiko.co/docs/api)'
+_API_USER_AGENT = 'AobanaReibun/1.1 (+https://nadeshiko.co/docs/api)'
 _SORT_MODES = frozenset({'RELEVANCE', 'ASC', 'DESC', 'TIME_ASC', 'TIME_DESC', 'RANDOM'})
 _MAX_TAKE = 50
 _MEDIA_PUBLIC_ID_RE = re.compile('^[A-Za-z0-9_-]{12}$')

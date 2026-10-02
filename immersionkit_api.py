@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 import requests
 DEFAULT_BASE_URL = 'https://apiv2.immersionkit.com'
-_API_USER_AGENT = 'AobanaReibun/1.0 (+https://www.immersionkit.com)'
+_API_USER_AGENT = 'AobanaReibun/1.1 (+https://www.immersionkit.com)'
 PACE_S = 2.0
 RATE_LIMIT_WAIT_S = 10.0
 RATE_LIMIT_RETRIES = 3
@@ -126,6 +126,8 @@ _LEAD_TAG_RE = re.compile('^\\s*\\[[A-Za-z0-9 ]{1,12}\\][\\s\u3000]*')
 _KANJI_RE = re.compile('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]')
 _KANA_RE = re.compile('[ぁ-ゖァ-ヶー]')
 _ASCII_TAG_RE = re.compile('\\(([^()]*)\\)')
+_READABLE_RE = re.compile('[㐀-䶿一-鿿豈-\ufaff々〆ヶぁ-ゖァ-ヶーA-Za-z0-9Ａ-Ｚａ-ｚ０-９]')
+_BRACKET_RE = re.compile('[()（）「」『』［］\\[\\]【】〈〉《》]')
 _TAG_RE = re.compile('<[^>]+>')
 _RT_RE = re.compile('<rt>.*?</rt>', re.DOTALL)
 _TRIM = ' \t\r\n\u3000'
@@ -168,19 +170,24 @@ def _normalized(chars: List[str]) -> List[str]:
         result[i] += ch
     return result
 
-def bold_offsets(example: Dict[str, Any]) -> set:
+def bold_offsets(example: Dict[str, Any], query: str='') -> set:
     words = [str(w) for w in example.get('word_list') or []]
     sentence = str(example.get('sentence', '') or '')
-    if ''.join(words) != sentence:
-        return set()
     out = set()
-    for item in example.get('matched_indexes') or []:
-        try:
-            index, length = (int(item['index']), int(item['length']))
-        except Exception:
-            continue
-        start = len(''.join(words[:index]))
-        out.update(range(start, min(start + length, len(sentence))))
+    if ''.join(words) == sentence:
+        for item in example.get('matched_indexes') or []:
+            try:
+                index, length = (int(item['index']), int(item['length']))
+            except Exception:
+                continue
+            start = len(''.join(words[:index]))
+            out.update(range(start, min(start + length, len(sentence))))
+    query = str(query or '').strip()
+    if not out and query:
+        hit = sentence.find(query)
+        while hit >= 0:
+            out.update(range(hit, hit + len(query)))
+            hit = sentence.find(query, hit + len(query))
     return out
 
 def _furigana_pairs(furigana: str) -> Optional[Tuple[str, List[Tuple[int, int, str]]]]:
@@ -219,6 +226,12 @@ def ruby_spans(example: Dict[str, Any]) -> Dict[int, Tuple[int, str]]:
         base = stream[s:e]
         if not reading or not _KANJI_RE.search(base):
             continue
+        while base and (not _READABLE_RE.match(base[0])):
+            base, s = (base[1:], s + 1)
+        while base and (not _READABLE_RE.match(base[-1])):
+            base, e = (base[:-1], e - 1)
+        if _BRACKET_RE.search(base):
+            continue
         while base and reading and _KANA_RE.match(base[0]) and (_hira(base[0]) == _hira(reading[0])):
             base, reading, s = (base[1:], reading[1:], s + 1)
         while base and reading and _KANA_RE.match(base[-1]) and (_hira(base[-1]) == _hira(reading[-1])):
@@ -231,9 +244,9 @@ def ruby_spans(example: Dict[str, Any]) -> Dict[int, Tuple[int, str]]:
         spans[start] = (last + 1, reading)
     return spans
 
-def render(example: Dict[str, Any], furigana: bool=False, bold: bool=True, strip_names: bool=False) -> str:
+def render(example: Dict[str, Any], furigana: bool=False, bold: bool=True, strip_names: bool=False, query: str='') -> str:
     sentence = str(example.get('sentence', '') or '')
-    html = markup(_cleaned_chars(sentence), ruby_spans(example) if furigana else {}, bold_offsets(example) if bold else set()).strip(_TRIM)
+    html = markup(_cleaned_chars(sentence), ruby_spans(example) if furigana else {}, bold_offsets(example, query) if bold else set()).strip(_TRIM)
     if strip_names:
         html = strip_names_html(html)
     return html
@@ -265,6 +278,11 @@ def markup(chars: List[str], spans: Dict[int, Tuple[int, str]], bolds: set) -> s
 def strip_names_html(html: str) -> str:
     from .aobana_api import strip_speaker_tags
     return strip_speaker_tags(_ASCII_TAG_RE.sub('（\\1）', html))[0]
+
+def match_only_in_tag(example: Dict[str, Any], query: str='') -> bool:
+    if '<b>' not in render(example, bold=True, query=query):
+        return False
+    return '<b>' not in render(example, bold=True, strip_names=True, query=query)
 
 def plain(html: str) -> str:
     return _TAG_RE.sub('', _RT_RE.sub('', str(html or ''))).strip(_TRIM)
