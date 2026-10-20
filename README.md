@@ -12,9 +12,11 @@ Three sources, each optional:
   live action and YouTube, through the Nadeshiko API (an API key).
 - **[Immersion Kit](https://www.immersionkit.com)**: sentences with a screenshot, audio and an
   English translation from anime, drama and games. No key.
-- **[Aobana](https://github.com/Wyzmic/Aobana)**: your own subtitles, books and manga, searched on
-  your computer. Sentences with furigana, their source title, context lines and a manga
-  page's image.
+- **[Aobana](https://github.com/Wyzmic/Aobana)**: your own subtitles, books, manga and Custom
+  files, searched on your computer. Sentences with furigana, their source title, context lines
+  and a manga page's image; with a *Reading field*, only sentences where the word is read that
+  way (好く read すく, not よく); with *i+1 only*, only sentences where the word is the one you
+  don't know yet, by the known words Aobana imported from your decks.
 
 Aobana Reibun started from the code of [AnkiAutoImage](https://github.com/swagercode/AnkiAutoImage)
 by swagercode, with the author's permission, and has grown into its own add-on: it keeps
@@ -32,7 +34,7 @@ From [AnkiWeb](https://ankiweb.net/shared/info/1429349152): in Anki, open **Tool
 press **Get Add-ons...**, enter the code **1429349152** and restart Anki. Or download
 `AobanaReibun.ankiaddon` from the [release](https://github.com/Wyzmic/Aobana-Reibun/releases/latest)
 and open it with Anki, then restart. Requires Anki with Qt 6 (tested on 26.9) and, for the
-Aobana source, Aobana 1.7 or later.
+Aobana source, Aobana 2.0 or later (1.9 works without Custom, the reading field and i+1 only).
 
 ## Repository layout
 
@@ -42,6 +44,7 @@ Aobana source, Aobana 1.7 or later.
 | `tools.py` | the run dialog, the Settings dialog, the three batches and the three hotkeys |
 | `aobana_api.py` | the Aobana client: start/stop, search, context, locate, sentence rendering |
 | `discovery.py` | finds the installed Aobana program and its Python (no Qt) |
+| `known_server.py` | answers Aobana's known-words import on 127.0.0.1:5020 while Anki is open: your decks, read-only |
 | `nadeshiko_api.py` | the Nadeshiko API client |
 | `immersionkit_api.py` | the Immersion Kit client (paced to one request every 2 s), context media URLs, and its sentence rendering: bold, furigana, cleaning |
 | `anki_util.py`, `logger.py` | note/field helpers, the add-on's own log |

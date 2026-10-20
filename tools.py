@@ -8,6 +8,7 @@ import types
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 import re
+from html import escape as _html_escape, unescape as _html_unescape
 from aqt.qt import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox, QPushButton, QCheckBox, QSpinBox
 from aqt.qt import QDialogButtonBox, QFormLayout, QFrame, QScrollArea, QWidget
 from aqt.qt import QButtonGroup, QGridLayout, QTabBar, QGroupBox, QRadioButton, QSizePolicy, QStackedWidget
@@ -15,12 +16,12 @@ from aqt.qt import QFileDialog, QKeySequence, QKeySequenceEdit, QTabWidget, Qt
 from aqt.qt import qconnect
 from aqt import mw
 from aqt.utils import openLink, showInfo, showWarning
-from .logger import get_logger
+from .logger import get_logger, user_files_dir
 from .anki_util import MENU_NAME, get_selected_note_ids, get_deck_note_ids, add_image_to_note, ensure_media_filename_safe, get_field_value, add_audio_to_note
 from .nadeshiko_api import NadeshikoApiClient, NadeshikoApiError, NadeshikoCancelled
 from . import immersionkit_api as ik
 from .immersionkit_api import ImmersionKitClient, ImmersionKitError
-from .aobana_api import AobanaClient, AobanaError, render_sentence, context_wrap, field_plain, held_sentences, sentence_key, sentence_window, split_field_lines, strip_context, plain_text, strip_speaker_tags, tag_sentence, untag_sentence
+from .aobana_api import AobanaBusy, AobanaClient, AobanaError, AobanaNoAnswer, NO_ANSWER_MESSAGE, IPlusOneRefused, NoKnownWords, render_sentence, context_wrap, field_plain, held_sentences, sentence_key, sentence_window, split_field_lines, split_sounds, strip_context, plain_text, reading_query, strip_book_number, strip_speaker_tags, tag_sentence, untag_sentence
 _NADE_SELECTION_CHOICES = [('Random from pool', 'random'), ('Longest', 'longest'), ('Shortest', 'smallest'), ('Median', 'median'), ('Best match (no variety)', 'none'), ('Random across corpus', 'corpus_random')]
 _SUBS_SELECTION_CHOICES = [('Random from pool', 'random'), ('Longest', 'longest'), ('Shortest', 'smallest'), ('Median', 'median'), ('Best match (no variety)', 'none'), ('Random across all matches', 'corpus_random')]
 _FALLBACK_SWITCH_OF = {key: prefix + '_fallback_enabled' for prefix in ('nadeshiko', 'subs', 'immersionkit') for key in (prefix + '_fallback_pool_size', prefix + '_fallback_min_length', prefix + '_fallback_max_length', prefix + '_fallback_selection') if key != 'immersionkit_fallback_pool_size'}
@@ -100,10 +101,7 @@ def _write_config(data: Dict[str, Any]) -> bool:
         return False
 
 def _user_files_dir() -> str:
-    base_dir = os.path.dirname(__file__)
-    user_files_dir = os.path.join(base_dir, 'user_files')
-    os.makedirs(user_files_dir, exist_ok=True)
-    return user_files_dir
+    return user_files_dir()
 
 def _last_settings_path() -> str:
     return os.path.join(_user_files_dir(), 'last_settings.json')
@@ -167,6 +165,7 @@ def _settings_to_last(changed: Dict[str, Any]) -> None:
             data[block_name] = block
     if touched:
         _write_last_settings(data)
+_BOOK_NUMBERS_TIP = 'A book sentence loses the note number it starts with: （27）さやうにて… becomes\nさやうにて…. A number that belongs to the sentence stays, as in (2)は…; so do the\nnumbers in the context lines. Lines that are only a number are never picked.'
 _NADE_NO_KEY = 'Nadeshiko needs an API key: paste it in Tools → Aobana Reibun → Settings → Nadeshiko.'
 _NADE_BOLD_TAIL_TIP = "With Bold: a verb's or adjective's ending is bold with it, 食べました, not only 食べ.\nThe particles after it never are."
 _CHAIN_TIP = "The other sources to search, in order, for the notes this one found nothing for,\neach writing to the fields on its own tab of the Run dialog. The Run dialog's\nIf none found row starts from this, and the hotkey follows it, until a run there\nsaves its own choice."
@@ -212,15 +211,15 @@ def _pick_title(parent, titles: List[str], current: str) -> Optional[str]:
     return '' if listing.row(item) == 0 else item.text()
 
 class SettingsDialog(QDialog):
-    _TAB_ORDER = [('General', [('Run dialog', ['default_replace']), ('Reviewer hotkeys', ['reviewer_hotkey_subs', 'reviewer_hotkey_nadeshiko', 'reviewer_hotkey_immersionkit'])]), ('Aobana', [('Server', ['subs_base_url', 'subs_project_dir', 'subs_python', 'subs_autostart', 'subs_terminal']), ('Search', ['subs_cat_subs', 'subs_cat_epub', 'subs_cat_manga', 'subs_folder', 'subs_min_length', 'subs_max_length', 'subs_pool_size', 'subs_sentence_selection']), ('Fallback', ['subs_fallback_enabled', 'subs_fallback_pool_size', 'subs_fallback_min_length', 'subs_fallback_max_length', 'subs_fallback_selection', 'subs_if_none_found']), ('Fields && output', ['subs_furigana', 'subs_bold', 'subs_strip_names', 'subs_multi_count', 'subs_no_repeats', 'subs_context', 'subs_context_before', 'subs_context_after', 'subs_sentence_field', 'subs_source_field', 'subs_image_field'])]), ('Nadeshiko', [('Account', ['nadeshiko_api_key', 'nadeshiko_base_url']), ('Search', ['nadeshiko_sentence_lang', 'nadeshiko_cat_anime', 'nadeshiko_cat_live', 'nadeshiko_cat_yt', 'nadeshiko_require_media', 'nadeshiko_min_length', 'nadeshiko_max_length', 'nadeshiko_pool_size', 'nadeshiko_sentence_selection']), ('Fallback', ['nadeshiko_fallback_enabled', 'nadeshiko_fallback_pool_size', 'nadeshiko_fallback_min_length', 'nadeshiko_fallback_max_length', 'nadeshiko_fallback_selection', 'nadeshiko_if_none_found']), ('Fields && output', ['nadeshiko_bold', 'nadeshiko_bold_tail', 'nadeshiko_furigana', 'nadeshiko_sentence_en_lang', 'nadeshiko_sentence_field', 'nadeshiko_image_field', 'nadeshiko_audio_field', 'nadeshiko_sentence_en_field'])]), ('Immersion Kit', [('Search', ['immersionkit_cat_anime', 'immersionkit_cat_drama', 'immersionkit_cat_games', 'immersionkit_require_image', 'immersionkit_min_length', 'immersionkit_max_length', 'immersionkit_per_title', 'immersionkit_sentence_selection']), ('Fallback', ['immersionkit_fallback_enabled', 'immersionkit_fallback_min_length', 'immersionkit_fallback_max_length', 'immersionkit_fallback_selection', 'immersionkit_if_none_found']), ('Fields && output', ['immersionkit_furigana', 'immersionkit_bold', 'immersionkit_strip_names', 'immersionkit_context', 'immersionkit_context_before', 'immersionkit_context_after', 'immersionkit_context_images', 'immersionkit_context_audio', 'immersionkit_sentence_field', 'immersionkit_image_field', 'immersionkit_audio_field', 'immersionkit_translation_field', 'immersionkit_source_field'])])]
-    _LABELS = {'default_replace': 'If filled: Replace by default (all sources)', 'nadeshiko_api_key': 'Nadeshiko API key', 'nadeshiko_base_url': 'Nadeshiko base URL', 'nadeshiko_sentence_lang': 'Sentence language', 'nadeshiko_min_length': 'Minimum sentence length', 'nadeshiko_max_length': 'Maximum sentence length', 'nadeshiko_pool_size': 'Candidate pool size', 'nadeshiko_sentence_selection': 'Sentence selection', 'nadeshiko_fallback_enabled': 'Search again with the fallback settings', 'nadeshiko_fallback_pool_size': 'Fallback pool size', 'nadeshiko_fallback_min_length': 'Fallback minimum length', 'nadeshiko_fallback_max_length': 'Fallback maximum length', 'nadeshiko_fallback_selection': 'Fallback selection', 'nadeshiko_sentence_field': 'Default sentence field', 'nadeshiko_image_field': 'Default image field', 'nadeshiko_audio_field': 'Default sentence audio field', 'nadeshiko_sentence_en_field': 'Default translation field', 'nadeshiko_sentence_en_lang': 'Translation language', 'nadeshiko_cat_anime': 'Category: Anime', 'nadeshiko_cat_live': 'Category: Live Action', 'nadeshiko_cat_yt': 'Category: YouTube', 'nadeshiko_require_media': 'Require Image & Audio', 'nadeshiko_bold': 'Bold the target word', 'nadeshiko_bold_tail': "Bold the word's ending too", 'nadeshiko_furigana': 'Furigana', 'subs_base_url': 'Aobana URL', 'subs_project_dir': 'Aobana folder', 'subs_python': 'Python command', 'subs_autostart': 'Start Aobana automatically', 'subs_terminal': 'Aobana terminal window', 'subs_min_length': 'Minimum sentence length', 'subs_max_length': 'Maximum sentence length', 'subs_pool_size': 'Candidate pool size', 'subs_sentence_selection': 'Sentence selection', 'subs_fallback_pool_size': 'Fallback pool size', 'subs_fallback_min_length': 'Fallback minimum length', 'subs_fallback_max_length': 'Fallback maximum length', 'subs_fallback_selection': 'Fallback selection', 'subs_cat_subs': 'Subtitles corpus', 'subs_cat_epub': 'Books corpus', 'subs_cat_manga': 'Manga corpus', 'subs_fallback_enabled': 'Search again with the fallback settings', 'subs_image_field': 'Default image field (Manga page)', 'subs_furigana': 'Furigana', 'subs_strip_names': 'No （names）: strip speaker tags from subtitle lines', 'subs_multi_count': 'Sentences per note (1-100)', 'subs_bold': 'Bold the target word', 'subs_folder': 'Limit to title', 'subs_sentence_field': 'Default sentence field', 'subs_source_field': 'Default source field', 'subs_no_repeats': 'No repeats within a run', 'subs_context': 'Include context', 'subs_context_before': 'Context lines before', 'subs_context_after': 'Context lines after', 'reviewer_hotkey_subs': 'Reviewer hotkey: Aobana', 'reviewer_hotkey_nadeshiko': 'Reviewer hotkey: Nadeshiko', 'reviewer_hotkey_immersionkit': 'Reviewer hotkey: Immersion Kit', 'immersionkit_cat_anime': 'Category: Anime', 'immersionkit_cat_drama': 'Category: Drama', 'immersionkit_cat_games': 'Category: Games', 'immersionkit_require_image': 'Require an image', 'immersionkit_min_length': 'Minimum sentence length', 'immersionkit_max_length': 'Maximum sentence length', 'immersionkit_per_title': 'Examples per title', 'immersionkit_sentence_selection': 'Sentence selection', 'immersionkit_fallback_enabled': 'Pick again with the fallback settings', 'immersionkit_fallback_min_length': 'Fallback minimum length', 'immersionkit_fallback_max_length': 'Fallback maximum length', 'immersionkit_fallback_selection': 'Fallback selection', 'immersionkit_sentence_field': 'Default sentence field', 'immersionkit_image_field': 'Default image field', 'immersionkit_audio_field': 'Default sentence audio field', 'immersionkit_translation_field': 'Default translation field', 'immersionkit_source_field': 'Default source field', 'immersionkit_furigana': 'Furigana', 'immersionkit_bold': 'Bold the target word', 'immersionkit_strip_names': 'No (names): strip speaker tags', 'immersionkit_context': 'Include context', 'immersionkit_context_before': 'Context lines before', 'immersionkit_context_after': 'Context lines after', 'immersionkit_context_images': "Context lines' images", 'immersionkit_context_audio': "Context lines' audio", 'subs_if_none_found': 'If none found, then try', 'nadeshiko_if_none_found': 'If none found, then try', 'immersionkit_if_none_found': 'If none found, then try'}
+    _TAB_ORDER = [('General', [('Run dialog', ['default_replace']), ('Reviewer hotkeys', ['reviewer_hotkey_subs', 'reviewer_hotkey_nadeshiko', 'reviewer_hotkey_immersionkit'])]), ('Aobana', [('Server', ['subs_base_url', 'subs_project_dir', 'subs_python', 'subs_autostart', 'subs_terminal']), ('Search', ['subs_cat_subs', 'subs_cat_epub', 'subs_cat_manga', 'subs_cat_custom', 'subs_iplusone', 'subs_folder', 'subs_min_length', 'subs_max_length', 'subs_pool_size', 'subs_sentence_selection']), ('Fallback', ['subs_fallback_enabled', 'subs_fallback_pool_size', 'subs_fallback_min_length', 'subs_fallback_max_length', 'subs_fallback_selection', 'subs_if_none_found']), ('Fields && output', ['subs_furigana', 'subs_bold', 'subs_strip_names', 'subs_strip_book_numbers', 'subs_multi_count', 'subs_no_repeats', 'subs_context', 'subs_context_before', 'subs_context_after', 'subs_sentence_field', 'subs_source_field', 'subs_image_field', 'subs_reading_field']), ('Known words for Aobana', ['known_words_server', 'known_words_port'])]), ('Nadeshiko', [('Account', ['nadeshiko_api_key', 'nadeshiko_base_url']), ('Search', ['nadeshiko_sentence_lang', 'nadeshiko_cat_anime', 'nadeshiko_cat_live', 'nadeshiko_cat_yt', 'nadeshiko_require_media', 'nadeshiko_min_length', 'nadeshiko_max_length', 'nadeshiko_pool_size', 'nadeshiko_sentence_selection']), ('Fallback', ['nadeshiko_fallback_enabled', 'nadeshiko_fallback_pool_size', 'nadeshiko_fallback_min_length', 'nadeshiko_fallback_max_length', 'nadeshiko_fallback_selection', 'nadeshiko_if_none_found']), ('Fields && output', ['nadeshiko_bold', 'nadeshiko_bold_tail', 'nadeshiko_furigana', 'nadeshiko_sentence_en_lang', 'nadeshiko_sentence_field', 'nadeshiko_image_field', 'nadeshiko_audio_field', 'nadeshiko_sentence_en_field'])]), ('Immersion Kit', [('Search', ['immersionkit_cat_anime', 'immersionkit_cat_drama', 'immersionkit_cat_games', 'immersionkit_require_image', 'immersionkit_min_length', 'immersionkit_max_length', 'immersionkit_per_title', 'immersionkit_sentence_selection']), ('Fallback', ['immersionkit_fallback_enabled', 'immersionkit_fallback_min_length', 'immersionkit_fallback_max_length', 'immersionkit_fallback_selection', 'immersionkit_if_none_found']), ('Fields && output', ['immersionkit_furigana', 'immersionkit_bold', 'immersionkit_strip_names', 'immersionkit_context', 'immersionkit_context_before', 'immersionkit_context_after', 'immersionkit_context_images', 'immersionkit_context_audio', 'immersionkit_sentence_field', 'immersionkit_image_field', 'immersionkit_audio_field', 'immersionkit_translation_field', 'immersionkit_source_field'])])]
+    _LABELS = {'default_replace': 'If filled: Replace by default (all sources)', 'nadeshiko_api_key': 'Nadeshiko API key', 'nadeshiko_base_url': 'Nadeshiko base URL', 'nadeshiko_sentence_lang': 'Sentence language', 'nadeshiko_min_length': 'Minimum sentence length', 'nadeshiko_max_length': 'Maximum sentence length', 'nadeshiko_pool_size': 'Candidate pool size', 'nadeshiko_sentence_selection': 'Sentence selection', 'nadeshiko_fallback_enabled': 'Search again with the fallback settings', 'nadeshiko_fallback_pool_size': 'Fallback pool size', 'nadeshiko_fallback_min_length': 'Fallback minimum length', 'nadeshiko_fallback_max_length': 'Fallback maximum length', 'nadeshiko_fallback_selection': 'Fallback selection', 'nadeshiko_sentence_field': 'Default sentence field', 'nadeshiko_image_field': 'Default image field', 'nadeshiko_audio_field': 'Default sentence audio field', 'nadeshiko_sentence_en_field': 'Default translation field', 'nadeshiko_sentence_en_lang': 'Translation language', 'nadeshiko_cat_anime': 'Category: Anime', 'nadeshiko_cat_live': 'Category: Live Action', 'nadeshiko_cat_yt': 'Category: YouTube', 'nadeshiko_require_media': 'Require Image & Audio', 'subs_iplusone': 'i+1 sentences only', 'nadeshiko_bold': 'Bold the target word', 'nadeshiko_bold_tail': "Bold the word's ending too", 'nadeshiko_furigana': 'Furigana', 'subs_base_url': 'Aobana URL', 'subs_project_dir': 'Aobana folder', 'subs_python': 'Python command', 'subs_autostart': 'Start Aobana automatically', 'subs_terminal': 'Aobana terminal window', 'subs_min_length': 'Minimum sentence length', 'subs_max_length': 'Maximum sentence length', 'subs_pool_size': 'Candidate pool size', 'subs_sentence_selection': 'Sentence selection', 'subs_fallback_pool_size': 'Fallback pool size', 'subs_fallback_min_length': 'Fallback minimum length', 'subs_fallback_max_length': 'Fallback maximum length', 'subs_fallback_selection': 'Fallback selection', 'subs_cat_subs': 'Subtitles corpus', 'subs_cat_epub': 'Books corpus', 'subs_cat_manga': 'Manga corpus', 'subs_cat_custom': 'Custom corpus', 'subs_fallback_enabled': 'Search again with the fallback settings', 'subs_image_field': 'Default image field (Manga page)', 'subs_reading_field': 'Default reading field', 'subs_furigana': 'Furigana', 'subs_strip_names': 'No （names）: strip speaker tags from subtitle lines', 'subs_strip_book_numbers': 'No leading note numbers in book sentences', 'subs_multi_count': 'Sentences per note (1-100)', 'subs_bold': 'Bold the target word', 'subs_folder': 'Limit to title', 'subs_sentence_field': 'Default sentence field', 'subs_source_field': 'Default source field', 'subs_no_repeats': 'No repeats within a run', 'subs_context': 'Include context', 'subs_context_before': 'Context lines before', 'subs_context_after': 'Context lines after', 'known_words_server': 'Let Aobana read my decks for known words', 'known_words_port': 'Port for Aobana', 'reviewer_hotkey_subs': 'Reviewer hotkey: Aobana', 'reviewer_hotkey_nadeshiko': 'Reviewer hotkey: Nadeshiko', 'reviewer_hotkey_immersionkit': 'Reviewer hotkey: Immersion Kit', 'immersionkit_cat_anime': 'Category: Anime', 'immersionkit_cat_drama': 'Category: Drama', 'immersionkit_cat_games': 'Category: Games', 'immersionkit_require_image': 'Require an image', 'immersionkit_min_length': 'Minimum sentence length', 'immersionkit_max_length': 'Maximum sentence length', 'immersionkit_per_title': 'Examples per title', 'immersionkit_sentence_selection': 'Sentence selection', 'immersionkit_fallback_enabled': 'Pick again with the fallback settings', 'immersionkit_fallback_min_length': 'Fallback minimum length', 'immersionkit_fallback_max_length': 'Fallback maximum length', 'immersionkit_fallback_selection': 'Fallback selection', 'immersionkit_sentence_field': 'Default sentence field', 'immersionkit_image_field': 'Default image field', 'immersionkit_audio_field': 'Default sentence audio field', 'immersionkit_translation_field': 'Default translation field', 'immersionkit_source_field': 'Default source field', 'immersionkit_furigana': 'Furigana', 'immersionkit_bold': 'Bold the target word', 'immersionkit_strip_names': 'No (names): strip speaker tags', 'immersionkit_context': 'Include context', 'immersionkit_context_before': 'Context lines before', 'immersionkit_context_after': 'Context lines after', 'immersionkit_context_images': "Context lines' images", 'immersionkit_context_audio': "Context lines' audio", 'subs_if_none_found': 'If none found, then try', 'nadeshiko_if_none_found': 'If none found, then try', 'immersionkit_if_none_found': 'If none found, then try'}
     _CHOICES = {'nadeshiko_sentence_en_lang': (False, [('English', 'en'), ('Spanish', 'es')]), 'nadeshiko_sentence_selection': (False, _NADE_SELECTION_CHOICES), 'nadeshiko_fallback_selection': (False, _NADE_SELECTION_CHOICES), 'subs_terminal': (False, [('Show it', 'visible'), ('Start minimized', 'minimized'), ('Never show it', 'hidden')]), 'subs_sentence_selection': (False, _SUBS_SELECTION_CHOICES), 'subs_fallback_selection': (False, _SUBS_SELECTION_CHOICES), 'immersionkit_sentence_selection': (False, _IK_SELECTION_CHOICES), 'subs_if_none_found': (False, _chain_choices(_PROVIDER_SUBS)), 'nadeshiko_if_none_found': (False, _chain_choices(_PROVIDER_NADESHIKO)), 'immersionkit_if_none_found': (False, _chain_choices(_PROVIDER_IMMERSIONKIT)), 'immersionkit_fallback_selection': (False, _IK_SELECTION_CHOICES)}
-    _SPIN_RANGES = {'nadeshiko_min_length': (0, 5000, ''), 'nadeshiko_max_length': (0, 5000, 'No maximum'), 'nadeshiko_pool_size': (1, 50, ''), 'nadeshiko_fallback_pool_size': (1, 50, ''), 'nadeshiko_fallback_min_length': (0, 5000, ''), 'nadeshiko_fallback_max_length': (0, 5000, 'No maximum'), 'subs_multi_count': (1, 100, ''), 'subs_min_length': (0, 5000, ''), 'subs_max_length': (0, 5000, 'No maximum'), 'subs_pool_size': (1, _SUBS_MAX_TAKE, ''), 'subs_fallback_pool_size': (1, _SUBS_MAX_TAKE, ''), 'subs_fallback_min_length': (0, 5000, ''), 'subs_fallback_max_length': (0, 5000, 'No maximum'), 'subs_context_before': (0, _SUBS_CONTEXT_CAP, ''), 'subs_context_after': (0, _SUBS_CONTEXT_CAP, ''), 'immersionkit_min_length': (0, 5000, ''), 'immersionkit_max_length': (0, 5000, 'No maximum'), 'immersionkit_per_title': (5, 50, ''), 'immersionkit_fallback_min_length': (0, 5000, ''), 'immersionkit_fallback_max_length': (0, 5000, 'No maximum'), 'immersionkit_context_before': (0, ik.CONTEXT_CAP, ''), 'immersionkit_context_after': (0, ik.CONTEXT_CAP, '')}
+    _SPIN_RANGES = {'nadeshiko_min_length': (0, 5000, ''), 'nadeshiko_max_length': (0, 5000, 'No maximum'), 'nadeshiko_pool_size': (1, 50, ''), 'nadeshiko_fallback_pool_size': (1, 50, ''), 'nadeshiko_fallback_min_length': (0, 5000, ''), 'nadeshiko_fallback_max_length': (0, 5000, 'No maximum'), 'subs_multi_count': (1, 100, ''), 'subs_min_length': (0, 5000, ''), 'subs_max_length': (0, 5000, 'No maximum'), 'subs_pool_size': (1, _SUBS_MAX_TAKE, ''), 'subs_fallback_pool_size': (1, _SUBS_MAX_TAKE, ''), 'subs_fallback_min_length': (0, 5000, ''), 'subs_fallback_max_length': (0, 5000, 'No maximum'), 'subs_context_before': (0, _SUBS_CONTEXT_CAP, ''), 'subs_context_after': (0, _SUBS_CONTEXT_CAP, ''), 'immersionkit_min_length': (0, 5000, ''), 'immersionkit_max_length': (0, 5000, 'No maximum'), 'immersionkit_per_title': (5, 50, ''), 'immersionkit_fallback_min_length': (0, 5000, ''), 'immersionkit_fallback_max_length': (0, 5000, 'No maximum'), 'immersionkit_context_before': (0, ik.CONTEXT_CAP, ''), 'immersionkit_context_after': (0, ik.CONTEXT_CAP, ''), 'known_words_port': (1024, 65535, '')}
     _HOTKEY_KEYS = {'reviewer_hotkey_subs', 'reviewer_hotkey_nadeshiko', 'reviewer_hotkey_immersionkit'}
-    _PLACEHOLDERS = {'nadeshiko_api_key': 'Paste Nadeshiko API key', 'nadeshiko_base_url': 'https://api.nadeshiko.co/v1', 'nadeshiko_sentence_field': 'Blank = choose in Run dialog', 'nadeshiko_image_field': 'Blank = choose in Run dialog', 'nadeshiko_audio_field': 'Blank = choose in Run dialog', 'nadeshiko_sentence_en_field': 'Blank = choose in Run dialog', 'subs_base_url': 'http://127.0.0.1:5010', 'subs_project_dir': 'Blank = the installed Aobana (1.7 or later)', 'subs_python': 'python', 'subs_folder': 'Blank = search everything', 'subs_sentence_field': 'Blank = choose in Run dialog', 'subs_source_field': 'Blank = choose in Run dialog', 'subs_image_field': 'Blank = choose in Run dialog', 'reviewer_hotkey_subs': 'Ctrl+Shift+W', 'reviewer_hotkey_nadeshiko': 'Ctrl+Shift+O', 'reviewer_hotkey_immersionkit': 'Ctrl+Shift+K', 'immersionkit_sentence_field': 'Blank = choose in Run dialog', 'immersionkit_image_field': 'Blank = choose in Run dialog', 'immersionkit_audio_field': 'Blank = choose in Run dialog', 'immersionkit_translation_field': 'Blank = choose in Run dialog', 'immersionkit_source_field': 'Blank = choose in Run dialog'}
-    _TOOLTIPS = {'nadeshiko_sentence_en_field': "The sentence's translation, from Nadeshiko, goes into this field.\nThe Run dialog can choose another field, or (none), each run.", 'nadeshiko_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.\nEach fallback is a second request, counted against the monthly quota.', 'subs_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.', 'immersionkit_fallback_enabled': _IK_FALLBACK_TIP, 'subs_if_none_found': _CHAIN_TIP, 'nadeshiko_if_none_found': _CHAIN_TIP, 'immersionkit_if_none_found': _CHAIN_TIP, 'immersionkit_context_images': "With context on, add the context lines' screenshots after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_context_audio': "With context on, add the context lines' audio after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_per_title': "Immersion Kit returns this many examples from each title (about 95 titles) in one\nrequest; they are the pool every pick is made from. 5 is the API's smallest.", 'nadeshiko_require_media': 'Only pick a sentence that has both a screenshot and audio. When none in the pool\nhas both, the note is left as it is and the summary says why.', 'immersionkit_require_image': 'Only pick a sentence that has a screenshot (7 of 33 sampled for 病人 had none).\nEvery Immersion Kit sentence has audio.', 'immersionkit_furigana': 'Readings from Immersion Kit, as <ruby> over the kanji. Off by default.', 'immersionkit_strip_names': "Drop a (speaker) tag when words follow it, by the same rule as Aobana's No （names）.\nImmersion Kit also uses parentheses for sound cues and glosses, so it is off by default.", 'immersionkit_context': "Put the lines before and after the sentence around it, in the sentence field, and\ntheir images and audio with the sentence's, in reading order.\nOne more request per note, so a run takes about twice as long; the media adds none.", 'nadeshiko_bold_tail': _NADE_BOLD_TAIL_TIP, 'nadeshiko_furigana': "Readings from Nadeshiko's word analysis, as <ruby> over the kanji.\nA sentence without that analysis is written as before, without readings.", 'subs_min_length': _SUBS_LENGTH_TIP, 'subs_max_length': _SUBS_LENGTH_TIP, 'subs_fallback_min_length': _SUBS_LENGTH_TIP, 'subs_fallback_max_length': _SUBS_LENGTH_TIP, 'subs_folder': 'Only sentences from this title in your Aobana library: a show, a book,\na manga series. Choose… lists them; blank searches everything.', 'subs_image_field': "A Manga sentence's page image goes into this field.\nSubtitle and book sentences have no image and leave it alone.", 'subs_project_dir': 'Leave blank to use the installed Aobana 1.7 or later, found automatically.\nSet it for a portable or source copy, or to choose between two installs:\nthe folder that holds the aobana folder.', 'subs_python': 'At python, an installed Aobana runs with its own Python.\nChange it only for a source copy run with a particular interpreter.', 'subs_terminal': 'Only applies when this add-on starts Aobana itself. If a server already\nanswers at the Aobana URL (port 5010 by default), it is used as it is.\n"Start minimized" is best-effort: Windows Terminal may ignore it.\nWindows only - elsewhere the server always starts in its own session.'}
+    _PLACEHOLDERS = {'nadeshiko_api_key': 'Paste Nadeshiko API key', 'nadeshiko_base_url': 'https://api.nadeshiko.co/v1', 'nadeshiko_sentence_field': 'Blank = choose in Run dialog', 'nadeshiko_image_field': 'Blank = choose in Run dialog', 'nadeshiko_audio_field': 'Blank = choose in Run dialog', 'nadeshiko_sentence_en_field': 'Blank = choose in Run dialog', 'subs_base_url': 'http://127.0.0.1:5010', 'subs_project_dir': 'Blank = the installed Aobana (2.0 or later)', 'subs_python': 'python', 'subs_folder': 'Blank = search everything', 'subs_sentence_field': 'Blank = choose in Run dialog', 'subs_source_field': 'Blank = choose in Run dialog', 'subs_image_field': 'Blank = choose in Run dialog', 'subs_reading_field': 'Blank = choose in Run dialog', 'reviewer_hotkey_subs': 'Ctrl+Shift+W', 'reviewer_hotkey_nadeshiko': 'Ctrl+Shift+O', 'reviewer_hotkey_immersionkit': 'Ctrl+Shift+K', 'immersionkit_sentence_field': 'Blank = choose in Run dialog', 'immersionkit_image_field': 'Blank = choose in Run dialog', 'immersionkit_audio_field': 'Blank = choose in Run dialog', 'immersionkit_translation_field': 'Blank = choose in Run dialog', 'immersionkit_source_field': 'Blank = choose in Run dialog'}
+    _TOOLTIPS = {'nadeshiko_sentence_en_field': "The sentence's translation, from Nadeshiko, goes into this field.\nThe Run dialog can choose another field, or (none), each run.", 'nadeshiko_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.\nEach fallback is a second request, counted against the monthly quota.', 'subs_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.', 'known_words_server': "While Anki is open, Aobana's Settings → Known words can list your decks\nand import the words of the decks you pick, for i+1 sentences.\nOnly this computer can ask, and nothing in your collection changes.", 'known_words_port': 'Aobana asks on this port (5020 unless you change it).\nChange it only if another program uses 5020. Aobana has no field for it:\nset "reibun_port" to the same number in Aobana\'s config.json.', 'immersionkit_fallback_enabled': _IK_FALLBACK_TIP, 'subs_if_none_found': _CHAIN_TIP, 'nadeshiko_if_none_found': _CHAIN_TIP, 'immersionkit_if_none_found': _CHAIN_TIP, 'immersionkit_context_images': "With context on, add the context lines' screenshots after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_context_audio': "With context on, add the context lines' audio after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_per_title': "Immersion Kit returns this many examples from each title (about 95 titles) in one\nrequest; they are the pool every pick is made from. 5 is the API's smallest.", 'subs_iplusone': "Only pick an i+1 sentence: the searched word is the only one in it you don't know.\nNeeds Aobana 2.0 with your known words imported (Aobana's Settings → Known words).\nA word you already know, or a query of more than one word, gets no sentence; the\nsummary says why. The Reading field is not used: 猫＝ねこ is searched as 猫.", 'nadeshiko_require_media': 'Only pick a sentence that has both a screenshot and audio. When none in the pool\nhas both, the note is left as it is and the summary says why.', 'immersionkit_require_image': 'Only pick a sentence that has a screenshot (7 of 33 sampled for 病人 had none).\nEvery Immersion Kit sentence has audio.', 'immersionkit_furigana': 'Readings from Immersion Kit, as <ruby> over the kanji. Off by default.', 'immersionkit_strip_names': "Drop a (speaker) tag when words follow it, by the same rule as Aobana's No （names）.\nImmersion Kit also uses parentheses for sound cues and glosses, so it is off by default.", 'immersionkit_context': "Put the lines before and after the sentence around it, in the sentence field, and\ntheir images and audio with the sentence's, in reading order.\nOne more request per note, so a run takes about twice as long; the media adds none.", 'nadeshiko_bold_tail': _NADE_BOLD_TAIL_TIP, 'nadeshiko_furigana': "Readings from Nadeshiko's word analysis, as <ruby> over the kanji.\nA sentence without that analysis is written as before, without readings.", 'subs_min_length': _SUBS_LENGTH_TIP, 'subs_max_length': _SUBS_LENGTH_TIP, 'subs_fallback_min_length': _SUBS_LENGTH_TIP, 'subs_fallback_max_length': _SUBS_LENGTH_TIP, 'subs_strip_book_numbers': _BOOK_NUMBERS_TIP, 'subs_folder': 'Only sentences from this title in your Aobana library: a show, a book,\na manga series. Choose… lists them; blank searches everything.', 'subs_image_field': "A Manga sentence's page image goes into this field.\nSubtitle and book sentences have no image and leave it alone.", 'subs_reading_field': "A field with the word's reading, in kana. Aobana then finds the word only where it is\nread that way: 好く with すく skips 好く read よく. Katakana counts as hiragana.\nNeeds Aobana 2.0 or later.", 'subs_project_dir': 'Leave blank to use the installed Aobana 2.0 or later, found automatically.\nSet it for a portable or source copy, or to choose between two installs:\nthe folder that holds the aobana folder.', 'subs_python': 'At python, an installed Aobana runs with its own Python.\nChange it only for a source copy run with a particular interpreter.', 'subs_terminal': 'Only applies when this add-on starts Aobana itself. If a server already\nanswers at the Aobana URL (port 5010 by default), it is used as it is.\n"Start minimized" is best-effort: Windows Terminal may ignore it.\nWindows only - elsewhere the server always starts in its own session.'}
     _BROWSE_KEYS = ('subs_project_dir',)
-    _TAB_NOTES = {'General': [('What each source needs', ['<b>Aobana</b>: Aobana 1.7 or later on this computer, found automatically. No key and no quota. One search at a time; its fallback is a second search on your computer, which costs nothing.', '<b>Nadeshiko</b>: an API key. Each key may send 150 requests a minute and 5,000 a month, and each note is one request. <b>Its fallback sends a second request</b> for every note the main search left empty, which counts against the monthly quota.', "<b>Immersion Kit</b>: no key. It allows about one request every 2 seconds, so a run goes one note at a time: about 3.5 minutes per 100 notes, twice that with context (one more request per note; the context lines' images and audio add none). <b>Its fallback sends no request</b>: the one search already returned every candidate, and the fallback picks again from them. If it still rate-limits, the run stops and keeps what it found."])]}
+    _TAB_NOTES = {'General': [('What each source needs', ['<b>Aobana</b>: Aobana 2.0 or later on this computer, found automatically. No key and no quota. One search at a time; its fallback is a second search on your computer, which costs nothing.', '<b>Nadeshiko</b>: an API key. Each key may send 150 requests a minute and 5,000 a month, and each note is one request. <b>Its fallback sends a second request</b> for every note the main search left empty, which counts against the monthly quota.', "<b>Immersion Kit</b>: no key. It allows about one request every 2 seconds, so a run goes one note at a time: about 3.5 minutes per 100 notes, twice that with context (one more request per note; the context lines' images and audio add none). <b>Its fallback sends no request</b>: the one search already returned every candidate, and the fallback picks again from them. If it still rate-limits, the run stops and keeps what it found."])]}
     _HELP_LINKS = {'nadeshiko_api_key': ('Get key', 'https://nadeshiko.co/user/developer')}
 
     def __init__(self, parent=None) -> None:
@@ -330,6 +329,16 @@ class SettingsDialog(QDialog):
             widget.setEnabled(False)
         form.addRow(label, self._wrap_widget_with_help(key, widget))
         self.labels[key] = label
+        if key == 'known_words_port':
+            try:
+                from . import known_server
+                taken = known_server.LAST_ERROR
+            except Exception:
+                taken = ''
+            if taken:
+                note = QLabel(taken)
+                note.setWordWrap(True)
+                form.addRow(QLabel(''), note)
         switch_key = _FALLBACK_SWITCH_OF.get(key)
         if switch_key:
             switch = self.widgets.get(switch_key)
@@ -542,7 +551,14 @@ class SettingsDialog(QDialog):
                 if key in data:
                     shortcut.setKey(QKeySequence(str(data[key] or '').strip()))
                     shortcut.setEnabled(bool(str(data[key] or '').strip()))
-            showInfo('Settings saved.')
+            taken = ''
+            try:
+                from . import known_server
+                known_server.apply_config(data)
+                taken = known_server.LAST_ERROR
+            except Exception:
+                pass
+            showInfo('Settings saved.' + ('\n\n' + taken if taken else ''))
             self.accept()
         else:
             showWarning('Could not save the settings.')
@@ -602,6 +618,10 @@ class BackfillImagesDialog(QDialog):
             notes.addRow('Deck', self.deck_combo)
         self.query_field = QComboBox(self)
         notes.addRow('Query field', self.query_field)
+        self.lbl_subs_reading = QLabel('Reading field', self)
+        self.subs_reading_field = QComboBox(self)
+        self.subs_reading_field.setToolTip("A field with the word's reading, in kana. Aobana then finds the word only where it is\nread that way: 好く with すく skips 好く read よく. Katakana counts as hiragana.\n(none) searches the word alone.")
+        notes.addRow(self.lbl_subs_reading, self.subs_reading_field)
         layout.addWidget(notes_box)
         self.lbl_target = QLabel('Target Field', self)
         self.lbl_target.hide()
@@ -806,7 +826,6 @@ class BackfillImagesDialog(QDialog):
         self.ik_context_after.setValue(_ik_context_span(self.cfg, 'immersionkit_context_after', 1))
         ctx_row.addWidget(self.ik_context_after)
         write.addRow(QLabel('Context', page), ctx_row)
-        write.addRow(QLabel('Context media', page), ctx_media)
         col.addWidget(write_box)
         opts_box = QGroupBox('Options', page)
         opts = QGridLayout(opts_box)
@@ -817,9 +836,13 @@ class BackfillImagesDialog(QDialog):
         self.ik_strip_names = QCheckBox('No (names)', page)
         self.ik_strip_names.setChecked(bool(self.cfg.get('immersionkit_strip_names', False)))
         self.ik_strip_names.setToolTip("Drop a (speaker) tag when words follow it, as Aobana's No （names） does.\nImmersion Kit also puts sound cues and glosses in parentheses.")
-        opts.addWidget(self.ik_furigana, 0, 0)
-        opts.addWidget(self.ik_bold, 0, 1)
-        opts.addWidget(self.ik_strip_names, 1, 1)
+        media_row = QHBoxLayout()
+        media_row.addWidget(QLabel('Context media', page))
+        media_row.addLayout(ctx_media)
+        opts.addLayout(media_row, 0, 0, 1, 2)
+        opts.addWidget(self.ik_furigana, 1, 0)
+        opts.addWidget(self.ik_bold, 1, 1)
+        opts.addWidget(self.ik_strip_names, 2, 1)
         self._ik_opts = opts
         col.addWidget(opts_box)
         return page
@@ -836,9 +859,12 @@ class BackfillImagesDialog(QDialog):
         self.subs_cat_epub.setChecked(bool(self.cfg.get('subs_cat_epub', True)))
         self.subs_cat_manga = QCheckBox('Manga', page)
         self.subs_cat_manga.setChecked(bool(self.cfg.get('subs_cat_manga', True)))
+        self.subs_cat_custom = QCheckBox('Custom', page)
+        self.subs_cat_custom.setChecked(bool(self.cfg.get('subs_cat_custom', True)))
         source.addWidget(self.subs_cat_subs)
         source.addWidget(self.subs_cat_epub)
         source.addWidget(self.subs_cat_manga)
+        source.addWidget(self.subs_cat_custom)
         source.addStretch(1)
         col.addWidget(source_box)
         col.addWidget(self._build_chain_box(page, _PROVIDER_SUBS))
@@ -874,6 +900,21 @@ class BackfillImagesDialog(QDialog):
         col.addWidget(write_box)
         opts_box = QGroupBox('Options', page)
         opts = QGridLayout(opts_box)
+        self.subs_multi_label = QLabel('Sentences per note', page)
+        self.subs_multi = QSpinBox(page)
+        self.subs_multi.setRange(1, _SUBS_MULTI_CAP)
+        self.subs_multi.setValue(_subs_multi_count(self.cfg))
+        self.subs_multi.setToolTip('How many example sentences to put in the sentence field, one per line.\nEvery one contains the word. With i+1 only, every one is i+1.')
+        self.subs_iplusone_chk = QCheckBox('i+1 only', page)
+        self.subs_iplusone_chk.setChecked(bool(self.cfg.get('subs_iplusone', False)))
+        self.subs_iplusone_chk.setToolTip("Only pick a sentence where the searched word is the only one you don't know.\nUses the known words imported in Aobana. Exact search is off meanwhile.")
+        qconnect(self.subs_iplusone_chk.toggled, lambda _=None: self._lock_exact())
+        multi = QHBoxLayout()
+        multi.addWidget(self.subs_iplusone_chk)
+        multi.addSpacing(24)
+        multi.addWidget(self.subs_multi_label)
+        multi.addWidget(self.subs_multi)
+        multi.addStretch(1)
         self.subs_furigana = QCheckBox('Furigana', page)
         self.subs_furigana.setChecked(bool(self.cfg.get('subs_furigana', True)))
         self.subs_bold = QCheckBox('Bold', page)
@@ -884,25 +925,20 @@ class BackfillImagesDialog(QDialog):
         self.subs_no_repeats = QCheckBox('No repeats', page)
         self.subs_no_repeats.setChecked(bool(self.cfg.get('subs_no_repeats', False)))
         self.subs_no_repeats.setToolTip("Within one run, never give the same corpus sentence to two notes.\nWhen a word's pool runs out, a repeat is allowed and counted in the summary.")
-        self.subs_multi_label = QLabel('Sentences per note', page)
-        self.subs_multi = QSpinBox(page)
-        self.subs_multi.setRange(1, _SUBS_MULTI_CAP)
-        self.subs_multi.setValue(_subs_multi_count(self.cfg))
-        self.subs_multi.setToolTip('How many example sentences to put in the sentence field, one per line.\nEvery one contains the word. They are not filtered by which other words\nyou know (not i+1).')
-        multi = QHBoxLayout()
-        multi.addWidget(self.subs_multi_label)
-        multi.addWidget(self.subs_multi)
-        multi.addStretch(1)
+        self.subs_strip_book_numbers = QCheckBox('No note numbers', page)
+        self.subs_strip_book_numbers.setChecked(_subs_strip_book_numbers(self.cfg))
+        self.subs_strip_book_numbers.setToolTip(_BOOK_NUMBERS_TIP)
         opts.addWidget(self.subs_furigana, 0, 0)
         opts.addWidget(self.subs_bold, 0, 1)
         opts.addWidget(self.subs_strip_names, 1, 0)
-        opts.addWidget(self.subs_no_repeats, 1, 1)
-        opts.addLayout(multi, 2, 1)
+        opts.addWidget(self.subs_strip_book_numbers, 1, 1)
+        opts.addWidget(self.subs_no_repeats, 2, 1)
+        opts.addLayout(multi, 3, 0, 1, 2)
         self._subs_opts = opts
         col.addWidget(opts_box)
         return page
     _NADE_TOGGLES = [('cat_anime', 'nade_cat_anime'), ('cat_live', 'nade_cat_live'), ('cat_yt', 'nade_cat_yt'), ('require_media', 'nade_req_media'), ('bold', 'nade_bold'), ('furigana', 'nade_furigana'), ('bold_tail', 'nade_bold_tail')]
-    _SUBS_TOGGLES = [('cat_subs', 'subs_cat_subs'), ('cat_epub', 'subs_cat_epub'), ('cat_manga', 'subs_cat_manga'), ('furigana', 'subs_furigana'), ('bold', 'subs_bold'), ('strip_names', 'subs_strip_names'), ('no_repeats', 'subs_no_repeats'), ('context', 'subs_context_chk')]
+    _SUBS_TOGGLES = [('cat_subs', 'subs_cat_subs'), ('cat_epub', 'subs_cat_epub'), ('cat_manga', 'subs_cat_manga'), ('cat_custom', 'subs_cat_custom'), ('furigana', 'subs_furigana'), ('bold', 'subs_bold'), ('strip_names', 'subs_strip_names'), ('no_repeats', 'subs_no_repeats'), ('context', 'subs_context_chk'), ('strip_book_numbers', 'subs_strip_book_numbers'), ('iplusone', 'subs_iplusone_chk')]
     _SUBS_SPINS = [('multi_count', 'subs_multi'), ('context_before', 'subs_context_before'), ('context_after', 'subs_context_after')]
     _IK_TOGGLES = [('cat_anime', 'ik_cat_anime'), ('cat_drama', 'ik_cat_drama'), ('cat_games', 'ik_cat_games'), ('require_image', 'ik_req_image'), ('furigana', 'ik_furigana'), ('bold', 'ik_bold'), ('strip_names', 'ik_strip_names'), ('context', 'ik_context_chk'), ('context_images', 'ik_ctx_images'), ('context_audio', 'ik_ctx_audio')]
     _IK_SPINS = [('context_before', 'ik_context_before'), ('context_after', 'ik_context_after')]
@@ -928,7 +964,7 @@ class BackfillImagesDialog(QDialog):
         last = _read_last_settings() or {}
         prov = _PROVIDER_BLOCK[provider]
         shared = last.get(prov, {}) if isinstance(last.get(prov), dict) else {}
-        self.exact_chk.setChecked(shared.get('exact') is True)
+        getattr(self, '_set_exact', self.exact_chk.setChecked)(shared.get('exact') is True)
         fill = shared.get('if_filled')
         if fill in ('skip', 'replace', 'append', 'context'):
             {'skip': self.fill_skip, 'replace': self.fill_replace, 'append': self.fill_append, 'context': self.fill_context}[fill].setChecked(True)
@@ -955,6 +991,36 @@ class BackfillImagesDialog(QDialog):
     def _subs_context_choice(self) -> bool:
         own = getattr(self, '_subs_context_own', None)
         return bool(self.subs_context_chk.isChecked()) if own is None else bool(own)
+
+    def _lock_exact(self) -> None:
+        chk = getattr(self, 'exact_chk', None)
+        iplusone = getattr(self, 'subs_iplusone_chk', None)
+        if chk is None or iplusone is None:
+            return
+        locked = iplusone.isChecked() and _selected_provider(self) == _PROVIDER_SUBS
+        own = getattr(self, '_exact_own', None)
+        if locked:
+            if own is None:
+                self._exact_own = chk.isChecked()
+            chk.setChecked(False)
+            chk.setEnabled(False)
+            chk.setToolTip('Off while i+1 only is ticked: i+1 searches one word, not a phrase.')
+        else:
+            chk.setEnabled(True)
+            chk.setToolTip('')
+            if own is not None:
+                chk.setChecked(own)
+            self._exact_own = None
+
+    def _set_exact(self, value: bool) -> None:
+        if getattr(self, '_exact_own', None) is not None:
+            self._exact_own = bool(value)
+        else:
+            self.exact_chk.setChecked(bool(value))
+
+    def _exact_choice(self) -> bool:
+        own = getattr(self, '_exact_own', None)
+        return bool(self.exact_chk.isChecked()) if own is None else bool(own)
 
     def _ik_context_media_enabled(self) -> None:
         on = self.ik_context_chk.isChecked()
@@ -1074,6 +1140,11 @@ class BackfillImagesDialog(QDialog):
                     imgf = str(ls.get('image_field') or '')
                     idx = self.subs_image_field.findText(imgf) if imgf else 0
                     self.subs_image_field.setCurrentIndex(idx if idx >= 0 else 0)
+                if 'reading_field' in ls and hasattr(self, 'subs_reading_field'):
+                    rdf = str(ls.get('reading_field') or '')
+                    idx = self.subs_reading_field.findText(rdf) if rdf else 0
+                    if idx >= 0:
+                        self.subs_reading_field.setCurrentIndex(idx)
                 if qf and query:
                     self.query_field.setCurrentIndex(_index_of(qf, self.query_field.currentIndex()))
                 if sentf:
@@ -1091,6 +1162,8 @@ class BackfillImagesDialog(QDialog):
                     if name in li:
                         chosen = str(li.get(name) or '')
                         idx = combo.findText(chosen) if chosen else 0
+                        if name == 'sentence_field' and idx < 0:
+                            continue
                         combo.setCurrentIndex(idx if idx >= 0 else 0)
                 return
             ln = last.get('nadeshiko', {}) if isinstance(last.get('nadeshiko'), dict) else {}
@@ -1157,6 +1230,13 @@ def _nade_translation(segment: Optional[Dict[str, Any]], lang: str) -> str:
 _NADE_HL_TAG_RE = re.compile('</?(?:em|mark|b)>')
 _NADE_TAIL_RE = re.compile('<span class="highlight-tail">(.*?)</span>', re.S)
 _NADE_ANY_TAG_RE = re.compile('<[^>]+>')
+_NADE_KEPT_TAG_RE = re.compile('(</?(?:em|mark)>|<span class="highlight-tail">|</span>)')
+
+def _nade_escape(text: str, keep_tags: bool=False) -> str:
+    if not keep_tags:
+        return _html_escape(text, quote=False)
+    pieces = _NADE_KEPT_TAG_RE.split(text)
+    return ''.join((p if k % 2 else _html_escape(p, quote=False) for k, p in enumerate(pieces)))
 _NADE_TAIL_STOP = ('助詞', '補助記号', '記号', '空白')
 
 def _nade_highlight(hl: str, tokens: Any=None, tail: bool=True) -> str:
@@ -1172,7 +1252,7 @@ def _nade_highlight(hl: str, tokens: Any=None, tail: bool=True) -> str:
         text = m.group(1)
         if not tail:
             return text
-        start = len(_NADE_ANY_TAG_RE.sub('', hl[:m.start()]))
+        start = len(_html_unescape(_NADE_ANY_TAG_RE.sub('', hl[:m.start()])))
         keep = min([b - start for b in stops if start <= b < start + len(text)] + [len(text)])
         return ('<em>%s</em>' % text[:keep] if keep else '') + text[keep:]
     return _NADE_TAIL_RE.sub(one, hl).replace('</em><em>', '')
@@ -1229,8 +1309,9 @@ def _nade_format_sentence(segment: Dict[str, Any], lang_code: str, bold: bool=Tr
             with_ruby = _nade_furigana(text_obj, bold, tail)
             if with_ruby:
                 return with_ruby
-        hl = _nade_highlight(str(text_obj.get('highlight', '') or ''), text_obj.get('tokens'), tail).strip()
-        content = str(text_obj.get('content', '') or '').strip()
+        hl = _nade_escape(str(text_obj.get('highlight', '') or ''), keep_tags=True)
+        hl = _nade_highlight(hl, text_obj.get('tokens'), tail).strip()
+        content = _nade_escape(str(text_obj.get('content', '') or '')).strip()
         if hl:
             if not bold:
                 return content or re.sub('</?(em|mark|b)>', '', hl)
@@ -1378,17 +1459,17 @@ def _subs_sort_mode(mode: str) -> str:
     if mode == 'smallest':
         return 'asc'
     return 'recommended'
-_SUBS_CORPORA = (('subs_cat_subs', 'subs'), ('subs_cat_epub', 'epub'), ('subs_cat_manga', 'manga'))
+_SUBS_CORPORA = (('subs_cat_subs', 'subs'), ('subs_cat_epub', 'epub'), ('subs_cat_manga', 'manga'), ('subs_cat_custom', 'custom'))
 
 def _subs_wanted_media(cfg: Dict[str, Any]) -> set:
     wanted = {media for key, media in _SUBS_CORPORA if bool(cfg.get(key, True))}
     return wanted or {media for _key, media in _SUBS_CORPORA}
 
-def _subs_media_param(cfg: Dict[str, Any], sets: bool=False) -> str:
+def _subs_media_param(cfg: Dict[str, Any]) -> str:
     wanted = _subs_wanted_media(cfg)
     if len(wanted) == 1:
         return next(iter(wanted))
-    if sets and len(wanted) < len(_SUBS_CORPORA):
+    if len(wanted) < len(_SUBS_CORPORA):
         return ','.join((media for _key, media in _SUBS_CORPORA if media in wanted))
     return 'all'
 
@@ -1507,25 +1588,107 @@ def _subs_apply_tag_mode(rows, enabled: bool):
         kept.append(new_row)
     return kept
 
+def _subs_apply_book_numbers(rows, enabled: bool):
+    kept = []
+    for row in rows:
+        if str(row.get('media_type') or '') != 'epub':
+            kept.append(row)
+            continue
+        original = row.get('display_line') or ''
+        text, usable = strip_book_number(original)
+        if not usable:
+            continue
+        if not enabled or text == original:
+            kept.append(row)
+            continue
+        new_row = dict(row)
+        new_row['display_line'] = text
+        if isinstance(row.get('char_count'), int):
+            removed = _subs_display_length(original) - _subs_display_length(text)
+            new_row['char_count'] = max(0, row['char_count'] - removed)
+        kept.append(new_row)
+    return kept
+
+def _subs_strip_book_numbers(cfg) -> bool:
+    return bool(cfg.get('subs_strip_book_numbers', True))
+
 def _subs_display_length(text: str) -> int:
     return len(re.sub('[^\\w、\\.,]', '', field_plain(text)))
 
 def _subs_strip_names(cfg) -> bool:
     return bool(cfg.get('subs_strip_names', False))
+_READING_NEEDS_20 = 'Searched without the reading (the Reading field needs Aobana 2.0):'
+_READING_NEEDS_20_PRESS = 'The Reading field needs Aobana 2.0, so the word was searched without its reading.'
 
-def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exact: bool, min_len: Optional[int], max_len: Optional[int], count: int=1, used: Optional[set]=None, held: Optional[tuple]=None, held_hits: Optional[list]=None, diagnostics: Optional[list]=None) -> List[Dict[str, Any]]:
+def _reading_dropped(client: Any) -> int:
+    return _client_count(client, 'reading_dropped')
+
+def _client_count(client: Any, name: str) -> int:
+    count = getattr(client, name, 0)
+    return count if isinstance(count, int) and (not isinstance(count, bool)) else 0
+_READING_UNFIT = 'The reading did not fit, so the word was searched alone:'
+_READING_UNFIT_PRESS = 'The reading did not fit, so the word was searched alone.'
+_CUSTOM_NEEDS_20 = 'Custom needs Aobana 2.0, so it was not searched:'
+_CUSTOM_NEEDS_20_PRESS = 'Custom needs Aobana 2.0, so it was not searched.'
+_BUSY_BATCH = 'Not searched, Aobana is indexing your library:'
+_BUSY_AGAIN = 'Try again when it has finished.'
+_NO_ANSWER_BATCH = 'Not searched, Aobana did not answer in time:'
+_NO_ANSWER_AGAIN = 'Try again.'
+_IPLUSONE_WHY = {'known': 'the word is already known', 'unsupported': 'i+1 needs one word', 'others': 'the word has sentences, but none is i+1', 'none_i1': 'no i+1 sentence found'}
+_IPLUSONE_PRESS = {'known': 'No i+1 sentence: the word is already known.', 'unsupported': 'No i+1 sentence: i+1 needs one word.', 'others': 'No i+1 sentence: the word has sentences, but none is i+1 (i+1 only is on).'}
+
+def _iplusone_line(why: str, notes: int) -> str:
+    return 'i+1 only, %d %s got nothing: %s.' % (notes, 'note' if notes == 1 else 'notes', _IPLUSONE_WHY[why])
+
+class _NotIPlusOne(Exception):
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+_READING_TERM_RE = re.compile('([^=＝\\s]+)[=＝][^=＝\\s]+')
+
+def _subs_iplusone(cfg: Dict[str, Any]) -> bool:
+    return bool(cfg.get('subs_iplusone', False))
+
+def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exact: bool, min_len: Optional[int], max_len: Optional[int], count: int=1, used: Optional[set]=None, held: Optional[tuple]=None, held_hits: Optional[list]=None, diagnostics: Optional[list]=None, not_iplusone: Optional[list]=None, lost_custom: Optional[list]=None) -> List[Dict[str, Any]]:
     count = max(1, int(count or 1))
-    media = _subs_media_param(cfg)
-    if media == 'all' and len(_subs_wanted_media(cfg)) < len(_SUBS_CORPORA):
-        media = _subs_media_param(cfg, sets=bool(getattr(client, 'media_sets', lambda: False)()))
+    kinds = getattr(client, 'media_kinds', None)
+    kinds = kinds() if callable(kinds) else None
+    has = len(_SUBS_CORPORA)
+    if not isinstance(kinds, list) or 'custom' not in kinds:
+        if getattr(client, 'capabilities_known', True) is False and 'custom' in _subs_wanted_media(cfg):
+            raise AobanaNoAnswer(NO_ANSWER_MESSAGE)
+        if not isinstance(kinds, list):
+            lost_custom = None
+        if _subs_wanted_media(cfg) == {'custom'}:
+            if lost_custom is not None:
+                lost_custom.append('all')
+            return []
+        if lost_custom is not None and bool(cfg.get('subs_cat_custom', True)):
+            lost_custom.append('some')
+        cfg = dict(cfg, subs_cat_custom=False)
+        has -= 1
+    media = _subs_media_param(cfg) if len(_subs_wanted_media(cfg)) < has else 'all'
     folder = str(cfg.get('subs_folder', '') or '').strip()
     strip_names = _subs_strip_names(cfg)
+    book_numbers = _subs_strip_book_numbers(cfg)
+    learn = {'learn': 'only'} if _subs_iplusone(cfg) else {}
+    word = _READING_TERM_RE.fullmatch(query.strip()) if learn else None
+    if word:
+        query = word.group(1)
+    if learn:
+        exact = False
 
     def search(limit, sort):
-        rows = client.search(query, exact=exact, media=media, limit=limit, sort=sort, folder=folder)
+        rows = client.search(query, exact=exact, media=media, limit=limit, sort=sort, folder=folder, **learn)
+        if learn:
+            info = getattr(rows, 'learn', None)
+            if not isinstance(info, dict) or info.get('unsupported') or info.get('target_known'):
+                raise _NotIPlusOne('known' if isinstance(info, dict) and info.get('target_known') else 'unsupported')
         if diagnostics is not None:
             diagnostics.append({'has_results': bool(rows), 'outside_media': getattr(rows, 'outside_media', []), 'global_total': getattr(rows, 'global_total', None)})
-        return _subs_apply_tag_mode(_subs_keep_media(rows, cfg), strip_names)
+        rows = _subs_apply_tag_mode(_subs_keep_media(rows, cfg), strip_names)
+        return _subs_apply_book_numbers(rows, book_numbers)
     picked: List[Dict[str, Any]] = []
     seen = set()
     stages = []
@@ -1556,7 +1719,12 @@ def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exac
             for rows, mode, lo, hi in list(stages):
                 take_from(rows, mode, lo, hi, allow_used=True)
     mode, take, sort = _subs_search_options(cfg)
-    take_from(search(take, sort), mode, min_len, max_len)
+    try:
+        take_from(search(take, sort), mode, min_len, max_len)
+    except _NotIPlusOne as why:
+        if not_iplusone is not None:
+            not_iplusone.append(why.reason)
+        return []
     if len(picked) >= count:
         return picked
     if mode in ('longest', 'smallest'):
@@ -1567,6 +1735,9 @@ def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exac
         fb_mode, fb_take, fb_sort, fb_min, fb_max = _subs_fallback_options(cfg)
         take_from(search(fb_take, fb_sort), fb_mode, fb_min, fb_max)
     repeats_if_short()
+    if learn and (not picked) and (not_iplusone is not None) and (not any((rows for rows, *_ in stages))):
+        rows = _subs_keep_media(client.search(query, exact=exact, media=media, limit=take, sort=sort, folder=folder), cfg)
+        not_iplusone.append('others' if rows else 'none')
     return picked
 
 def _subs_is_manga(row: Dict[str, Any]) -> bool:
@@ -2259,9 +2430,18 @@ def _refresh_field_dropdowns(self) -> None:
     self.subs_image_field.addItem(_NO_FIELD)
     self.subs_image_field.addItems(fields)
     self.subs_sentence_field.setCurrentIndex(_pick_default(fields, _setting_first('subs_sentence_field', ['Sentence1', 'Sentence', 'Text', 'Front', 'Expression'])))
-    for combo, key in ((self.subs_source_field, 'subs_source_field'), (self.subs_image_field, 'subs_image_field')):
+    optional = [(self.subs_source_field, 'subs_source_field'), (self.subs_image_field, 'subs_image_field')]
+    if hasattr(self, 'subs_reading_field'):
+        self.subs_reading_field.blockSignals(True)
+        self.subs_reading_field.clear()
+        self.subs_reading_field.addItem(_NO_FIELD)
+        self.subs_reading_field.addItems(fields)
+        optional.append((self.subs_reading_field, 'subs_reading_field'))
+    for combo, key in optional:
         chosen = str(self.cfg.get(key, '') or '').strip()
         combo.setCurrentIndex(combo.findText(chosen) if chosen in fields else 0)
+    if hasattr(self, 'subs_reading_field'):
+        self.subs_reading_field.blockSignals(False)
     self.subs_sentence_field.blockSignals(False)
     self.subs_source_field.blockSignals(False)
     self.subs_image_field.blockSignals(False)
@@ -2291,16 +2471,20 @@ def _toggle_provider_fields(self) -> None:
         if is_subs:
             self._subs_opts.addWidget(self.exact_chk, 2, 0)
         elif name == _PROVIDER_IMMERSIONKIT:
-            self._ik_opts.addWidget(self.exact_chk, 1, 0)
+            self._ik_opts.addWidget(self.exact_chk, 2, 0)
         else:
             self._nade_opts.addWidget(self.exact_chk, 1, 0)
         self.exact_chk.show()
         self.fill_context.setVisible(is_subs)
+        for widget in (getattr(self, 'lbl_subs_reading', None), getattr(self, 'subs_reading_field', None)):
+            if widget is not None:
+                widget.setVisible(is_subs)
         if not is_subs and self.fill_context.isChecked():
             self.fill_skip.setChecked(True)
         if self.provider_tabs.currentIndex() != current:
             self.provider_tabs.setCurrentIndex(current)
         self.adjustSize()
+        self._lock_exact()
     except Exception:
         pass
 
@@ -2554,6 +2738,8 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     no_result = 0
     updated = 0
     errors = 0
+    busy = 0
+    no_answer = 0
     try:
         min_len = int(self.cfg.get('subs_min_length', 6))
     except Exception:
@@ -2568,8 +2754,13 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
         self.cfg['subs_cat_subs'] = self.subs_cat_subs.isChecked()
         self.cfg['subs_cat_epub'] = self.subs_cat_epub.isChecked()
         self.cfg['subs_cat_manga'] = self.subs_cat_manga.isChecked()
+        self.cfg['subs_cat_custom'] = self.subs_cat_custom.isChecked()
+    if hasattr(self, 'subs_iplusone_chk'):
+        self.cfg['subs_iplusone'] = self.subs_iplusone_chk.isChecked()
     if hasattr(self, 'subs_strip_names'):
         self.cfg['subs_strip_names'] = self.subs_strip_names.isChecked()
+    if hasattr(self, 'subs_strip_book_numbers'):
+        self.cfg['subs_strip_book_numbers'] = self.subs_strip_book_numbers.isChecked()
     if hasattr(self, 'subs_multi'):
         self.cfg['subs_multi_count'] = int(self.subs_multi.value())
     multi_count = _subs_multi_count(self.cfg)
@@ -2580,6 +2771,7 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     if source_field == _NO_FIELD:
         source_field = ''
     image_field = _field_or_blank(self.subs_image_field.currentText()) if hasattr(self, 'subs_image_field') else ''
+    reading_field = _field_or_blank(self.subs_reading_field.currentText()) if hasattr(self, 'subs_reading_field') else ''
     images_added = 0
     images_missing = 0
     fill_mode = _fill_mode(self)
@@ -2597,6 +2789,10 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     not_found = 0
     ambiguous = 0
     nothing_new = set()
+    iplusone = _subs_iplusone(self.cfg)
+    not_iplusone: Dict[int, str] = {}
+    no_iplusone = 0
+    reading_unfit = lost_custom = 0
     skipped = {'filled': 0, 'no_fields': 0}
     deleted = unwritten = 0
     tasks = []
@@ -2617,7 +2813,8 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
         held = None
         if fill_mode == 'append' and sent_field in note and note[sent_field].strip():
             held = held_sentences(note[sent_field])
-        tasks.append((nid, q, q.strip(), None, held))
+        reading = get_field_value(note, reading_field) if reading_field and reading_field != query_field else ''
+        tasks.append((nid, q, reading_query(q.strip(), reading), None, held))
     if not tasks:
         if empty_queries:
             self.logger.info(f'Skipped {empty_queries} notes with empty query fields.')
@@ -2626,107 +2823,158 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     client = _subs_make_client(self.cfg, self.logger)
     stop = threading.Event()
     start_error: List[str] = []
+    halted: List[str] = []
     try:
 
-        def wrap_existing(existing):
-            nonlocal context_missing, context_outside_window, context_added, not_found, ambiguous
+        def bump(tally, name, n=1):
+            tally[name] = tally.get(name, 0) + n
+
+        def wrap_existing(existing, tally):
             lines, hints = existing
             out = []
             for i, line in enumerate(lines):
-                bare = strip_context(line)
+                bare, sounds = split_sounds(strip_context(line))
                 if not bare.strip():
                     out.append(line)
                     continue
                 row, amb, got = sentence_window(client, bare, hints[i] if i < len(hints) else '', ctx_before, ctx_after)
                 if row is None:
-                    not_found += 1
+                    bump(tally, 'not_found')
                     out.append(line)
                     continue
-                ambiguous += int(amb)
+                bump(tally, 'ambiguous', int(amb))
                 if got is None:
                     if getattr(client, 'context_missing_reason', '') == 'outside_window':
-                        context_outside_window += 1
+                        bump(tally, 'context_outside_window')
                     else:
-                        context_missing += 1
+                        bump(tally, 'context_missing')
                     out.append(line)
                     continue
                 tagged_bare = tag_sentence(untag_sentence(bare), row['rowid'], row.get('media_type', 'subs'))
-                out.append(context_wrap(tagged_bare, got[0], got[1], furigana=furigana, strip_names=strip_names and row.get('media_type', 'subs') == 'subs', media=row.get('media_type', 'subs')))
-                context_added += 1
+                wrapped = context_wrap(tagged_bare, got[0], got[1], furigana=furigana, strip_names=strip_names and row.get('media_type', 'subs') == 'subs', media=row.get('media_type', 'subs')) + sounds
+                out.append(wrapped)
+                if wrapped != line:
+                    bump(tally, 'context_added')
             return '<br>'.join(out)
 
         def fetch_subs(task):
-            nonlocal repeats, context_missing, context_outside_window, context_added
             nid, q, q_text, existing, held = task
+            tally: Dict[str, Any] = {}
             try:
                 if existing is not None:
-                    return (nid, q, None, None, wrap_existing(existing))
+                    return (nid, q, None, None, wrap_existing(existing, tally), tally)
                 held_hits = []
-                rows = _subs_fetch_rows(client, self.cfg, q_text, _exact_search, min_len, max_len, count=multi_count, used=used, held=held, held_hits=held_hits, diagnostics=search_diagnostics)
-                if not rows and held_hits:
-                    nothing_new.add(nid)
+                why = []
+                lost = []
+                unfit = _client_count(client, 'reading_unfit')
+                rows = _subs_fetch_rows(client, self.cfg, q_text, _exact_search, min_len, max_len, count=multi_count, used=used, held=held, held_hits=held_hits, diagnostics=search_diagnostics, not_iplusone=why, lost_custom=lost)
+                tally['why'] = why[0] if why else None
+                tally['nothing_new'] = not rows and bool(held_hits)
+                tally['lost_custom'] = lost[0] if lost else None
+                tally['reading_unfit'] = _client_count(client, 'reading_unfit') > unfit
                 if used is not None:
                     keys = [(r.get('media_type'), r.get('rowid')) for r in rows]
-                    repeats += sum((1 for k in keys if k in used))
+                    bump(tally, 'repeats', sum((1 for k in keys if k in used)))
                     used.update(keys)
                 if add_context:
                     for row in rows:
                         wrapped = _subs_context_html(client, row, ctx_before, ctx_after, furigana, bold, strip_names)
                         if wrapped is None:
                             if getattr(client, 'context_missing_reason', '') == 'outside_window':
-                                context_outside_window += 1
+                                bump(tally, 'context_outside_window')
                             else:
-                                context_missing += 1
+                                bump(tally, 'context_missing')
                             continue
                         row['_with_context'] = wrapped
-                        context_added += 1
+                        bump(tally, 'context_added')
                 if image_field:
                     for row in rows:
                         if _subs_is_manga(row):
                             row['_page_image'] = client.page_image(int(row.get('rowid')))
-                return (nid, q, rows, None, None)
+                return (nid, q, rows, None, None, tally)
+            except NoKnownWords:
+                raise
             except Exception as exc:
-                return (nid, q, None, str(exc), None)
+                tally['busy'] = isinstance(exc, AobanaBusy)
+                tally['no_answer'] = isinstance(exc, AobanaNoAnswer)
+                return (nid, q, None, str(exc), None, tally)
         kept = _Kept(stop)
+        refused: List[str] = []
 
         def work():
             try:
                 client.ensure_running(autostart=bool(self.cfg.get('subs_autostart', True)))
+                if iplusone and any((task[3] is None for task in tasks)):
+                    client.iplusone_ready()
+            except IPlusOneRefused as exc:
+                refused.append(str(exc))
+                start_error.append(str(exc))
+                return
             except AobanaError as exc:
                 start_error.append(str(exc))
                 return
             for task in tasks:
                 if stop.is_set():
                     return
-                if not kept.add(fetch_subs(task)):
+                try:
+                    got = fetch_subs(task)
+                except NoKnownWords as exc:
+                    halted.append(str(exc))
+                    return
+                if not kept.add(got):
                     return
         cancelled = _run_with_progress(self, 'Aobana', len(tasks), work, stop, lambda: len(kept), cancel=client.cancel, poll=client.progress)
         results = kept.snapshot()
         if start_error:
             if chain is None:
                 showWarning(start_error[0])
-            _batch_report(chain, start_error[0], [t[0] for t in tasks], show=lambda _text: None)
+            _batch_report(chain, start_error[0], [] if refused else [t[0] for t in tasks], show=lambda _text: None)
             return
         not_searched = len(tasks) - len(results)
         missed = []
         with _batch_undo(self.mw):
-            for nid, q, rows, err, rewritten in results:
+            for nid, q, rows, err, rewritten, tally in results:
+                repeats += tally.get('repeats', 0)
+                context_added += tally.get('context_added', 0)
+                context_missing += tally.get('context_missing', 0)
+                context_outside_window += tally.get('context_outside_window', 0)
+                not_found += tally.get('not_found', 0)
+                ambiguous += tally.get('ambiguous', 0)
+                reading_unfit += bool(tally.get('reading_unfit'))
+                lost_custom += bool(tally.get('lost_custom'))
+                if tally.get('why'):
+                    not_iplusone[nid] = tally['why']
+                if tally.get('nothing_new'):
+                    nothing_new.add(nid)
                 if err:
                     self.logger.error(f"Aobana error for '{q}': {err}")
-                    errors += 1
+                    if tally.get('busy'):
+                        busy += 1
+                    elif tally.get('no_answer'):
+                        no_answer += 1
+                    else:
+                        errors += 1
                     missed.append(nid)
                     continue
                 if rewritten is not None:
                     note = _live_note(col, nid)
                     if note is None:
                         deleted += 1
-                    elif rewritten != note[sent_field]:
+                        continue
+                    if rewritten != note[sent_field]:
                         note[sent_field] = rewritten
                         _save_note(col, note)
                         updated += 1
                     continue
                 if not rows:
-                    if nid not in nothing_new:
+                    if tally.get('lost_custom') == 'all':
+                        missed.append(nid)
+                    elif not_iplusone.get(nid, 'none') != 'none':
+                        missed.append(nid)
+                    elif nid not in nothing_new and iplusone and (nid not in not_iplusone):
+                        no_iplusone += 1
+                        missed.append(nid)
+                    elif nid not in nothing_new:
                         no_result += 1
                         missed.append(nid)
                     continue
@@ -2780,6 +3028,14 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
         msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten)
         if no_result:
             msg += f'\nNo results: {no_result}'
+        if lost_custom:
+            msg += f'\n{_CUSTOM_NEEDS_20} {lost_custom}'
+        for why in ('others', 'known', 'unsupported'):
+            notes_for = sum((1 for got in not_iplusone.values() if got == why))
+            if notes_for:
+                msg += '\n' + _iplusone_line(why, notes_for)
+        if no_iplusone:
+            msg += '\n' + _iplusone_line('none_i1', no_iplusone)
         if nothing_new:
             msg += f'\nNothing new (every match is already on the note): {len(nothing_new)}'
         if repeats:
@@ -2798,16 +3054,26 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
             msg += f'\nNo context (sentence outside the returned window): {context_outside_window}'
         if context_missing:
             msg += f'\nNo context (Aobana too old for it): {context_missing}'
-        if search_diagnostics and (not errors) and (not cancelled) and all((not d['has_results'] for d in search_diagnostics)):
-            selected_media = [kind for kind, key in (('subs', 'subs_cat_subs'), ('books', 'subs_cat_epub'), ('manga', 'subs_cat_manga')) if self.cfg.get(key, True)]
+        if _reading_dropped(client):
+            msg += f'\n{_READING_NEEDS_20} {_reading_dropped(client)}'
+        if reading_unfit:
+            msg += f'\n{_READING_UNFIT} {reading_unfit}'
+        if search_diagnostics and (not errors) and (not busy) and (not cancelled) and all((not d['has_results'] for d in search_diagnostics)) and (not any((why.startswith('others') for why in not_iplusone.values()))):
+            selected_media = [kind for kind, key in (('subs', 'subs_cat_subs'), ('books', 'subs_cat_epub'), ('manga', 'subs_cat_manga'), ('custom', 'subs_cat_custom')) if self.cfg.get(key, True)]
             try:
-                msg += '\n' + client.empty_search_reason(search_diagnostics, selected_media or ['subs', 'books', 'manga'])
+                msg += '\n' + client.empty_search_reason(search_diagnostics, selected_media or ['subs', 'books', 'manga', 'custom'], iplusone=iplusone)
             except AobanaError as exc:
                 msg += '\n' + str(exc)
+        if busy:
+            msg += f'\n{_BUSY_BATCH} {busy}\n{_BUSY_AGAIN}'
+        if no_answer:
+            msg += f'\n{_NO_ANSWER_BATCH} {no_answer}\n{_NO_ANSWER_AGAIN}'
         if errors:
             msg += f'\nErrors: {errors}'
         if cancelled and not_searched:
             msg += f'\nNot searched (cancelled): {not_searched}'
+        elif halted and not_searched:
+            msg += f'\nNot searched: {not_searched}\n{halted[0]}'
         self.logger.info(f'Subs batch: updated={updated} empty={empty_queries} no_result={no_result} errors={errors} field={sent_field!r} source={source_field!r} replace={replace}')
         _refresh_after_batch(self.mw, self.browser)
         _batch_report(chain, msg, missed, cancelled, show=lambda text: _subs_show_summary(text, self))
@@ -3153,6 +3419,8 @@ def _remember_run_settings(self, provider: str, query_field: str, fields: bool=T
         if provider == _PROVIDER_SUBS:
             source = self.subs_source_field.currentText().strip()
             block = {'query_field': query_field, 'sentence_field': self.subs_sentence_field.currentText().strip(), 'source_field': '' if source == _NO_FIELD else source, 'image_field': _field_or_blank(self.subs_image_field.currentText())}
+            if hasattr(self, 'subs_reading_field'):
+                block['reading_field'] = _field_or_blank(self.subs_reading_field.currentText())
             toggles, spins = (BackfillImagesDialog._SUBS_TOGGLES, BackfillImagesDialog._SUBS_SPINS)
             key = 'subs'
         elif provider == _PROVIDER_IMMERSIONKIT:
@@ -3171,7 +3439,7 @@ def _remember_run_settings(self, provider: str, query_field: str, fields: bool=T
             block[name] = int(getattr(self, attr).value())
         if key == 'subs' and hasattr(self, '_subs_context_choice'):
             block['context'] = self._subs_context_choice()
-        block['exact'] = bool(self.exact_chk.isChecked())
+        block['exact'] = self._exact_choice() if hasattr(self, '_exact_choice') else bool(self.exact_chk.isChecked())
         block['if_filled'] = fill
         saved_block = data.get(key) if isinstance(data.get(key), dict) else {}
         if not shared:
@@ -3202,6 +3470,13 @@ def _off_the_word(query_field: str, *write_fields: str) -> List[str]:
         if name:
             taken.add(name)
     return out
+
+def _card_field(names: List[str], chosen, guesses, taken=()) -> str:
+    for name in list(chosen) + list(guesses):
+        name = str(name or '').strip()
+        if name and name in names and (name not in taken):
+            return name
+    return ''
 
 def _hotkey_options(cfg: Dict[str, Any], block: Dict[str, Any], prefix: str, toggles, spins=()) -> None:
     for key in toggles:
@@ -3255,7 +3530,7 @@ def quick_add_nadeshiko_for_current_card(mw, then=None, tried=(), notes=()) -> N
                 return []
         fields = _field_names(note)
         last_nade = last.get('nadeshiko', {}) if isinstance(last.get('nadeshiko'), dict) else {}
-        query_field = str(last_nade.get('query_field') or ('Expression' if 'Expression' in fields else 'Front' if 'Front' in fields else fields[0] if fields else '')).strip()
+        query_field = _card_field(fields, [last_nade.get('query_field')], ['Expression', 'Front'] + fields[:1])
 
         def media_field(name: str, guesses: List[str]) -> str:
             chosen = str((last_nade.get(name) if name in last_nade else cfg.get('nadeshiko_' + name)) or '').strip()
@@ -3266,12 +3541,7 @@ def quick_add_nadeshiko_for_current_card(mw, then=None, tried=(), notes=()) -> N
             return next((g for g in guesses if g in fields), '')
         image_field = media_field('image_field', ['Image1', 'Picture', 'Image', 'Images'])
         audio_field = media_field('audio_field', ['Audio1', 'Audio', 'Sound', '音声'])
-        sentence_field = str(last_nade.get('sentence_field') or cfg.get('nadeshiko_sentence_field') or '').strip()
-        if not sentence_field:
-            for cand in ['Sentence1', 'Sentence', 'Text']:
-                if cand in fields:
-                    sentence_field = cand
-                    break
+        sentence_field = _card_field(fields, [last_nade.get('sentence_field'), cfg.get('nadeshiko_sentence_field')], ['Sentence1', 'Sentence', 'Text'], taken=(query_field,))
         translation_field = str((last_nade.get('translation_field') if 'translation_field' in last_nade else cfg.get('nadeshiko_sentence_en_field')) or '').strip()
         if not sentence_field or sentence_field not in fields or sentence_field == query_field:
             _hotkey_refuse(mw, _PROVIDER_NADESHIKO, then, tried, notes, 'Run the batch once, or set the sentence field in Settings.')
@@ -3369,24 +3639,14 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
         cfg = _read_config()
         last = _read_last_settings() or {}
         last_subs = last.get('subs', {}) if isinstance(last.get('subs'), dict) else {}
-        _hotkey_options(cfg, last_subs, 'subs_', ('cat_subs', 'cat_epub', 'cat_manga', 'furigana', 'bold', 'strip_names', 'context'), ('multi_count', 'context_before', 'context_after'))
+        _hotkey_options(cfg, last_subs, 'subs_', ('cat_subs', 'cat_epub', 'cat_manga', 'cat_custom', 'iplusone', 'furigana', 'bold', 'strip_names', 'context', 'strip_book_numbers'), ('multi_count', 'context_before', 'context_after'))
         exact = bool(last_subs.get('exact', False))
         try:
             fields = list(note.keys())
         except Exception:
             fields = []
-        query_field = str(last_subs.get('query_field') or '').strip()
-        if not query_field:
-            for cand in ['Front', 'Expression', 'Word', 'Term']:
-                if cand in fields:
-                    query_field = cand
-                    break
-        sentence_field = str(last_subs.get('sentence_field') or cfg.get('subs_sentence_field') or '').strip()
-        if not sentence_field:
-            for cand in ['Sentence1', 'Sentence', 'Text']:
-                if cand in fields:
-                    sentence_field = cand
-                    break
+        query_field = _card_field(fields, [last_subs.get('query_field')], ['Front', 'Expression', 'Word', 'Term'])
+        sentence_field = _card_field(fields, [last_subs.get('sentence_field'), cfg.get('subs_sentence_field')], ['Sentence1', 'Sentence', 'Text'], taken=(query_field,))
         source_field = str((last_subs.get('source_field') if 'source_field' in last_subs else cfg.get('subs_source_field')) or '').strip()
         if not sentence_field or sentence_field not in fields or sentence_field == query_field:
             _hotkey_refuse(mw, _PROVIDER_SUBS, then, tried, notes, 'Run the batch once, or set the sentence field in Settings.')
@@ -3398,6 +3658,9 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
         if not q_text:
             showInfo(f"Query field '{query_field}' is empty; nothing to do.")
             return
+        reading_field = '' if last_subs.get('reading_field', None) == '' else _card_field(fields, [last_subs.get('reading_field'), cfg.get('subs_reading_field')], [], taken=(query_field,))
+        if reading_field:
+            q_text = reading_query(q_text, get_field_value(note, reading_field))
         try:
             min_len = int(cfg.get('subs_min_length', 6))
         except Exception:
@@ -3411,6 +3674,9 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
         wants_image = bool(image_field and image_field in note)
         nid = mw.reviewer.card.nid
         client = _subs_make_client(cfg, get_logger())
+        not_iplusone: List[str] = []
+        lost_custom: List[str] = []
+        refused: List[str] = []
     except Exception as exc:
         showWarning(f'Failed to add an Aobana sentence: {exc}')
         return
@@ -3418,8 +3684,14 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
     def fetch():
         try:
             client.ensure_running(autostart=bool(cfg.get('subs_autostart', True)))
+            if _subs_iplusone(cfg):
+                try:
+                    client.iplusone_ready()
+                except IPlusOneRefused as exc:
+                    refused.append(str(exc))
+                    raise
             diagnostics: List[Dict[str, Any]] = []
-            rows = _subs_fetch_rows(client, cfg, q_text, exact, min_len, max_len, count=_subs_multi_count(cfg), diagnostics=diagnostics)
+            rows = _subs_fetch_rows(client, cfg, q_text, exact, min_len, max_len, count=_subs_multi_count(cfg), diagnostics=diagnostics, not_iplusone=not_iplusone, lost_custom=lost_custom)
             if cfg.get('subs_context', False):
                 for row in rows:
                     wrapped = _subs_context_html(client, row, _subs_context_span(cfg, 'subs_context_before', 2), _subs_context_span(cfg, 'subs_context_after', 1), bool(cfg.get('subs_furigana', True)), bool(cfg.get('subs_bold', True)), _subs_strip_names(cfg))
@@ -3439,7 +3711,7 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
             rows, outside = result
             text, title = _subs_rendered(rows or [], bool(cfg.get('subs_furigana', True)), bool(cfg.get('subs_bold', True)))
             if not text:
-                _hotkey_none(mw, _PROVIDER_SUBS, then, tried, 'Title unavailable in Aobana: %s.' % ', '.join(outside) if outside else 'No Aobana results found.', notes)
+                _hotkey_none(mw, _PROVIDER_SUBS, then, tried, _IPLUSONE_PRESS[not_iplusone[0]] if not_iplusone and not_iplusone[0] != 'none' else _CUSTOM_NEEDS_20_PRESS if lost_custom and lost_custom[0] == 'all' else 'Title unavailable in Aobana: %s.' % ', '.join(outside) if outside else 'No Aobana i+1 sentence found (i+1 only is on).' if _subs_iplusone(cfg) and (not not_iplusone) else 'No Aobana results found.', notes)
                 return
             col, note = _hotkey_note(mw, nid)
             if note is None:
@@ -3460,6 +3732,12 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
                 updated = _clear_missing_media(note, image_field, True) or updated
             if wants_image and len(found) < len(manga):
                 image_note = '\n(This manga page has no image.)'
+            if _reading_dropped(client):
+                image_note += f'\n({_READING_NEEDS_20_PRESS})'
+            if _client_count(client, 'reading_unfit'):
+                image_note += f'\n({_READING_UNFIT_PRESS})'
+            if lost_custom:
+                image_note += f'\n({_CUSTOM_NEEDS_20_PRESS})'
             if updated:
                 _hotkey_save(mw, col, note)
                 mw.reset()
@@ -3468,7 +3746,13 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
                 showInfo('Nothing was updated.' + _hotkey_notes(notes))
         except Exception as exc:
             showWarning(f'Failed to add an Aobana sentence: {exc}')
-    _hotkey_search('Aobana', fetch, apply, poll=client.progress, cancel=client.cancel, on_error=lambda text: _hotkey_none(mw, _PROVIDER_SUBS, then, tried, text, notes, failed=True))
+
+    def failed(text):
+        if refused:
+            showWarning(text + _hotkey_notes(notes))
+        else:
+            _hotkey_none(mw, _PROVIDER_SUBS, then, tried, text, notes, failed=True)
+    _hotkey_search('Aobana', fetch, apply, poll=client.progress, cancel=client.cancel, on_error=failed)
 
 def quick_add_immersionkit_for_current_card(mw, then=None, tried=(), notes=()) -> None:
     if _busy_refuse():
@@ -3495,8 +3779,8 @@ def quick_add_immersionkit_for_current_card(mw, then=None, tried=(), notes=()) -
             if name in block:
                 return ''
             return next((g for g in guesses if g in names), '')
-        query_field = str(block.get('query_field') or '').strip() or next((g for g in ['Front', 'Expression', 'Word', 'Term'] if g in names), '')
-        sentence_field = field('sentence_field', ['Sentence1', 'Sentence', 'Text'])
+        query_field = _card_field(names, [block.get('query_field')], ['Front', 'Expression', 'Word', 'Term'])
+        sentence_field = '' if block.get('sentence_field', None) == '' else _card_field(names, [block.get('sentence_field'), cfg.get('immersionkit_sentence_field')], ['Sentence1', 'Sentence', 'Text'], taken=(query_field,))
         image_field = field('image_field', ['Image1', 'Picture', 'Image', 'Images'])
         audio_field = field('audio_field', ['Audio1', 'Audio', 'Sound', '音声'])
         translation_field = field('translation_field', [])

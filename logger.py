@@ -2,6 +2,11 @@ from __future__ import annotations
 import logging
 import os
 LOGGER_NAME = 'aobana_reibun'
+USER_FILES = os.path.join(os.path.dirname(__file__), 'user_files')
+
+def user_files_dir() -> str:
+    os.makedirs(USER_FILES, exist_ok=True)
+    return USER_FILES
 
 class CloseAfterWriteRotatingHandler(logging.Handler):
 
@@ -43,10 +48,7 @@ def get_logger() -> logging.Logger:
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
-    base_dir = os.path.dirname(__file__)
-    user_files_dir = os.path.join(base_dir, 'user_files')
-    os.makedirs(user_files_dir, exist_ok=True)
-    log_path = os.path.join(user_files_dir, 'aobana-reibun.log')
+    log_path = os.path.join(user_files_dir(), 'aobana-reibun.log')
     handler = CloseAfterWriteRotatingHandler(log_path, max_bytes=1000000, backup_count=2)
     formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
     handler.setFormatter(formatter)

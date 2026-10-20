@@ -1,12 +1,13 @@
 from __future__ import annotations
 import re
 import threading
+from html import escape as _escape, unescape as _unescape
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 import requests
 DEFAULT_BASE_URL = 'https://apiv2.immersionkit.com'
-_API_USER_AGENT = 'AobanaReibun/1.1 (+https://www.immersionkit.com)'
+_API_USER_AGENT = 'AobanaReibun/1.2 (+https://www.immersionkit.com)'
 PACE_S = 2.0
 RATE_LIMIT_WAIT_S = 10.0
 RATE_LIMIT_RETRIES = 3
@@ -131,7 +132,7 @@ _BRACKET_RE = re.compile('[()（）「」『』［］\\[\\]【】〈〉《》]')
 _TAG_RE = re.compile('<[^>]+>')
 _RT_RE = re.compile('<rt>.*?</rt>', re.DOTALL)
 _TRIM = ' \t\r\n\u3000'
-SUBS_STR_REPLACEMENTS = [('>>', ' '), ('?\u3000', '？'), ('? ', '？'), ('?', '？'), ('？\u3000', '？'), ('？ ', '？'), ('!\u3000', '！'), ('! ', '！'), ('!', '！'), ('！\u3000', '！'), ('！ ', '！'), ('｡', '。'), ('。\u3000', '。'), ('。 ', '。'), (' 。', '。'), ('､', '、'), ('、 ', '、'), (' 、', '、'), ('……', '…'), ('...', '…'), ('････', '…'), ('･･･', '…'), ('･･', '：'), ('…\u3000', '…'), ('… ', '…'), (' …', '…'), ('\u3000…', '…'), ('➡\u3000', '――'), ('➡ ', '――'), ('➡', '――'), ('➨\u3000', '――'), ('➨ ', '――'), ('➨', '――'), (' ―', '――'), ('\u3000―', '――'), (' —', '――'), ('\u3000—', '――'), ('｢', '「'), ('｣', '」'), ('「\u3000', '「'), (' 「', '「'), ('」\u3000', '」'), ('」 ', '」'), ('\u3000(', '('), (' ( ', '('), ('( ', '('), ('(\u3000', '('), (' )', ')'), ('\u3000)', ')'), ('[', '（'), (']', '）'), ('<', '＜'), ('>', '＞'), ('＞ ', '＞'), ('＞\u3000', '＞'), ('＜ ', '＜'), ('＜\u3000', '＜'), ('）\u3000', '）'), ('） ', '）'), ('\u3000（', '（'), (' （', '（'), ('~ ', '~'), (' ~', '~'), ('〜', '～'), (' : ', '：'), (':', '：'), (' ･ ', '･'), (' ･', '･'), ('･ ', '･'), ('･', '・'), (' ・', '・'), ('・ ', '・'), ('"', '”'), ('→', '')]
+SUBS_STR_REPLACEMENTS = [('>>', ' '), ('?\u3000', '？'), ('? ', '？'), ('?', '？'), ('？\u3000', '？'), ('？ ', '？'), ('!\u3000', '！'), ('! ', '！'), ('!', '！'), ('！\u3000', '！'), ('！ ', '！'), ('｡', '。'), ('。\u3000', '。'), ('。 ', '。'), (' 。', '。'), ('､', '、'), ('、 ', '、'), (' 、', '、'), ('……', '…'), ('...', '…'), ('････', '…'), ('･･･', '…'), ('･･', '：'), ('…\u3000', '…'), ('… ', '…'), (' …', '…'), ('\u3000…', '…'), ('➡\u3000', '――'), ('➡ ', '――'), ('➡', '――'), ('➨\u3000', '――'), ('➨ ', '――'), ('➨', '――'), (' ―', '――'), ('\u3000―', '――'), (' —', '――'), ('\u3000—', '――'), ('｢', '「'), ('｣', '」'), ('「\u3000', '「'), (' 「', '「'), ('」\u3000', '」'), ('」 ', '」'), ('\u3000(', '('), (' ( ', '('), ('( ', '('), ('(\u3000', '('), (' )', ')'), ('\u3000)', ')'), ('[', '（'), (']', '）'), ('<', '＜'), ('>', '＞'), ('＞ ', '＞'), ('＞\u3000', '＞'), ('＜ ', '＜'), ('＜\u3000', '＜'), ('）\u3000', '）'), ('） ', '）'), ('\u3000（', '（'), (' （', '（'), ('~ ', '~'), (' ~', '~'), ('〜', '～'), (' : ', '：'), (':', '：'), (' ･ ', '･'), (' ･', '･'), ('･ ', '･'), ('･', '・'), (' ・', '・'), ('・ ', '・'), ('"', '”'), ('→', ''), ('◻', ''), ('☏', '☎')]
 
 def _hira(text: str) -> str:
     return ''.join((chr(ord(c) - 96) if 'ァ' <= c <= 'ヶ' else c for c in text))
@@ -257,12 +258,12 @@ def markup(chars: List[str], spans: Dict[int, Tuple[int, str]], bolds: set) -> s
     while i < len(chars):
         if i in spans:
             end, reading = spans[i]
-            base = ''.join(chars[i:end])
+            base = _escape(''.join(chars[i:end]), quote=False)
             units.append(('<ruby>%s<rt>%s</rt></ruby>' % (base, reading), any((k in bolds for k in range(i, end)))))
             i = end
             continue
         if chars[i]:
-            units.append((chars[i], i in bolds))
+            units.append((_escape(chars[i], quote=False), i in bolds))
         i += 1
     out = []
     in_bold = False
@@ -285,7 +286,7 @@ def match_only_in_tag(example: Dict[str, Any], query: str='') -> bool:
     return '<b>' not in render(example, bold=True, strip_names=True, query=query)
 
 def plain(html: str) -> str:
-    return _TAG_RE.sub('', _RT_RE.sub('', str(html or ''))).strip(_TRIM)
+    return _unescape(_TAG_RE.sub('', _RT_RE.sub('', str(html or '')))).strip(_TRIM)
 
 def length(example: Dict[str, Any]) -> int:
     return len(plain(render(example, furigana=False, bold=False)))

@@ -1,5 +1,4 @@
 from __future__ import annotations
-"Finding the Aobana program to start: its folder and the Python that runs it.\n\nAobana 1.7 and later is the `aobana` package, started as `python -m aobana.server.app` from\nthe folder that holds it. Nothing here imports Qt or Anki, so the tests run it directly.\n\nWhere an installed copy lives, per platform, from Aobana's own installers:\n\n* Windows: the Inno Setup installer registers AppId {dedba003-ceb5-4880-a40f-660dc88c9345}\n  under ...\\CurrentVersion\\Uninstall\\<AppId>_is1, with the folder in InstallLocation.\n  A per-user install writes HKEY_CURRENT_USER, an all-users one HKEY_LOCAL_MACHINE, and the\n  folder is whatever the user picked, so it is read from there, never guessed. The runtime is\n  the bundled python\\python.exe (the launcher runs pythonw.exe from the same folder).\n* Linux (tar.gz): install.sh copies the program to $XDG_DATA_HOME/aobana-app (default\n  ~/.local/share/aobana-app); the package and python/bin/python3 are in its app/ folder.\n  An AppImage mounts only while it runs, so it has no fixed folder to find.\n* macOS: Aobana.app/Contents/Resources/app, in /Applications or ~/Applications.\n\nThe installed program folder is not the user's data folder: settings, databases and the\nlibrary stay in the per-user data directory Aobana itself chooses (aobana/paths.py). This\nmodule only ever needs the program.\n\nAnki's own interpreter is never used: it lacks Aobana's dependencies (Flask, SudachiPy).\n"
 import os
 import shutil
 import sys
@@ -19,9 +18,6 @@ class Install:
 
 def is_program_dir(folder: str) -> bool:
     return bool(folder) and os.path.isfile(os.path.join(folder, 'aobana', '__main__.py'))
-
-def is_old_aobana(folder: str) -> bool:
-    return bool(folder) and os.path.isfile(os.path.join(folder, 'app.py')) and (not is_program_dir(folder))
 
 def bundled_python(folder: str) -> Optional[str]:
     for parts in (('python', 'python.exe'), ('python', 'bin', 'python3')):
@@ -90,14 +86,12 @@ def find_installs(candidates: Optional[Iterable[Tuple[str, str]]]=None) -> List[
             out.append(Install(os.path.normpath(folder), python, where))
     return out
 
-def resolve(project_dir: str, python_setting: str=DEFAULT_PYTHON, finder: Callable[[], List[Install]]=find_installs, old_candidates: Optional[Callable[[], List[str]]]=None) -> Install:
+def resolve(project_dir: str, python_setting: str=DEFAULT_PYTHON, finder: Callable[[], List[Install]]=find_installs) -> Install:
     python_setting = str(python_setting or '').strip() or DEFAULT_PYTHON
     folder = str(project_dir or '').strip()
     if folder:
         if not os.path.isdir(folder):
             raise DiscoveryError('The Aobana folder set in Settings does not exist:\n%s\n\nClear the setting to use the installed Aobana, or choose its new folder.' % folder)
-        if is_old_aobana(folder):
-            raise DiscoveryError('The Aobana in the folder set in Settings is older than 1.7:\n%s\n\nUpdate Aobana; this add-on starts version 1.7 and later.' % folder)
         if not is_program_dir(folder):
             raise DiscoveryError('No Aobana program in the folder set in Settings:\n%s\n\nChoose the folder that holds the aobana folder, or clear the setting to use the installed Aobana.' % folder)
         python = python_setting
@@ -113,13 +107,4 @@ def resolve(project_dir: str, python_setting: str=DEFAULT_PYTHON, finder: Callab
     if len(installs) > 1:
         listing = '\n'.join(('  %s (%s)' % (i.program_dir, i.where) for i in installs))
         raise DiscoveryError('More than one Aobana is installed:\n%s\n\nChoose which one to use in Settings (Aobana folder).' % listing)
-    old = [f for f in (old_candidates() if old_candidates else _registered_old()) if is_old_aobana(f)]
-    if old:
-        raise DiscoveryError('The installed Aobana is older than 1.7:\n%s\n\nUpdate Aobana; this add-on starts version 1.7 and later.' % old[0])
-    raise DiscoveryError('No installed Aobana was found.\n\nInstall Aobana 1.7 or later, or set the Aobana folder in Settings (for a portable or source copy).')
-
-def _registered_old() -> List[str]:
-    try:
-        return [folder for folder, _where in windows_registry_dirs() + unix_dirs()]
-    except Exception:
-        return []
+    raise DiscoveryError('No installed Aobana was found.\n\nInstall Aobana 2.0 or later, or set the Aobana folder in Settings (for a portable or source copy).')

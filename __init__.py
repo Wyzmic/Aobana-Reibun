@@ -1,5 +1,4 @@
 from __future__ import annotations
-'\nAnki add-on: Aobana Reibun (例文, "example sentences")\n\nExample sentences for Anki notes from three sources: a local Aobana (subtitles,\nbooks and manga on this computer), the Nadeshiko API and Immersion Kit. Adds:\n- Tools -> Aobana Reibun -> Run (run over a deck), first among the add-ons\' entries\n- Tools -> Aobana Reibun -> Settings (edit config)\n- Browser -> Edit -> Aobana Reibun, and right-click -> Aobana Reibun\n  (run over selected notes), each under AnkiAutoImage\'s "Auto Images" when it is installed\n- Three reviewer hotkeys, one per source.\n\nConfiguration is read from config.json next to this file. Every name above is\nthis add-on\'s own, so it can sit beside AnkiAutoImage, the add-on it started from.\n'
 from aqt import mw
 from aqt.qt import QAction, QKeySequence, QMenu, QShortcut, qconnect, Qt
 from .anki_util import BROWSER_NAME, MENU_NAME
@@ -113,17 +112,41 @@ def _setup_browser_menu_with_legacy_hook() -> None:
         pass
 
 def _ensure_user_files_dir() -> None:
-    import os
-    base_dir = os.path.dirname(__file__)
-    user_files_dir = os.path.join(base_dir, 'user_files')
     try:
-        os.makedirs(user_files_dir, exist_ok=True)
+        from .logger import user_files_dir
+        user_files_dir()
+    except Exception:
+        pass
+
+def _start_known_words_server() -> None:
+    try:
+        from .tools import _read_config
+        from . import known_server
+        if not known_server.apply_config(_read_config()) and known_server.LAST_ERROR:
+            _say_port_taken(known_server)
+    except Exception:
+        pass
+
+def _say_port_taken(known_server) -> None:
+    try:
+        from aqt import gui_hooks
+        from aqt.utils import tooltip
+
+        def show(*_args) -> None:
+            try:
+                gui_hooks.profile_did_open.remove(show)
+            except Exception:
+                pass
+            if known_server.LAST_ERROR:
+                tooltip(known_server.LAST_ERROR, period=15000)
+        gui_hooks.profile_did_open.append(show)
     except Exception:
         pass
 
 def init_addon() -> None:
     _ensure_user_files_dir()
     _setup_tools_menu()
+    _start_known_words_server()
     try:
         mw.addonManager.setConfigAction(__name__, _open_settings_dialog)
     except Exception:
