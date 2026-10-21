@@ -79,10 +79,11 @@ Aobana source, Aobana 2.0 or later (1.9 works without Custom, the reading field 
   the word's reading: kana, katakana, Anki furigana (`的[まと]`) or ruby. Each source then gives
   only sentences where the word is read that way: 好く with すく skips 好く read よく, and 的 with
   まと skips 目的 and 的 read てき. Aobana searches by the reading; Nadeshiko and Immersion Kit
-  keep the sentences their own furigana reads so. A word field in furigana (`的[まと]`) gives its
+  keep the sentences their own furigana reads so, a compound the word begins included (日本 with
+  にほん finds 日本語 read にほんご). A word field in furigana (`的[まと]`) gives its
   reading too, and its brackets are never searched; the Reading field wins when both have one.
-  Katakana counts as hiragana, and pitch marks and dots are dropped (たべ↓る and た・べる read
-  たべる). When no sentence reads the word that way, or the reading fits no form of the word
+  Katakana counts as hiragana (half-width too), pitch marks and dots are dropped (たべ↓る, たꜜべる
+  and た・べる read たべる), and a note in brackets is passed over (`（的のみ）まと` reads まと). When no sentence reads the word that way, or the reading fits no form of the word
   (辛い with たべる), the note is left as it is and the summary counts it: "No sentence with the
   word in that reading". Each tab keeps its own Reading field, and a source under `If none found`
   uses its own tab's.

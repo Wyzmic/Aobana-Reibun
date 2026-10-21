@@ -7,6 +7,7 @@ import socket
 import subprocess
 import threading
 import time
+import unicodedata
 import urllib.parse as urllib_parse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import requests
@@ -714,7 +715,8 @@ def field_plain(html: str) -> str:
 _WORD_KANJI_RE = re.compile('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]')
 _READING_SPLIT_RE = re.compile('[、,，/;；\\s]+')
 _HIRAGANA_RE = re.compile('[ぁ-ゖー]+')
-_READING_MARKS_RE = re.compile('[↓↑・／＼\\\\]')
+_READING_MARKS_RE = re.compile('[↓↑・／＼\\\\ꜜ̀-ͯ]')
+_READING_NOTE_RE = re.compile('\\([^()]*\\)')
 _ANKI_FURIGANA_RE = re.compile(' ?([^ \\[\\]]+)\\[([^\\[\\]]*)\\]')
 _RUBY_TAG_RE = re.compile('<ruby\\b[^>]*>(.*?)</ruby\\s*>', re.IGNORECASE | re.DOTALL)
 _RT_RE = re.compile('<rt\\b[^>]*>(.*?)</rt\\s*>', re.IGNORECASE | re.DOTALL)
@@ -748,13 +750,14 @@ _LEADING_KANA_RE = re.compile('[ぁ-ゖァ-ヺー]*')
 def _first_reading(html: str) -> str:
     text = _READING_BREAK_RE.sub('、', _ruby_as_brackets(html))
     text = _READING_MARKS_RE.sub('', _furigana_reading(field_plain(text)))
+    text = _READING_NOTE_RE.sub('、', unicodedata.normalize('NFKC', text))
     text = _NASAL_RE.sub(lambda m: chr(ord(m.group(1)) + 1), text).replace('゚', '')
     for part in _READING_SPLIT_RE.split(text):
         reading = _hira(part)
         if reading and _HIRAGANA_RE.fullmatch(reading):
             return reading
     return ''
-_READING_BREAK_RE = re.compile('<br\\s*/?>|</li\\s*>', re.IGNORECASE)
+_READING_BREAK_RE = re.compile('<br\\s*/?>|</li\\s*>|</?(?:div|p)\\b[^>]*>', re.IGNORECASE)
 _NASAL_RE = re.compile('([かきくけこカキクケコ])゚')
 
 def card_word(word_html: str, reading_html: str='') -> Tuple[str, str]:
@@ -769,13 +772,11 @@ def card_word(word_html: str, reading_html: str='') -> Tuple[str, str]:
     return (word, _first_reading(reading_html) or own)
 
 def reading_query(word: str, reading_html: str) -> str:
-    raw = (word or '').strip()
-    if not raw or '＝' in raw or '=' in raw:
-        return raw
-    plain, reading = card_word(raw, reading_html)
-    if reading:
-        return f'{plain}＝{reading}'
-    return plain if _ANKI_FURIGANA_RE.search(field_plain(_ruby_as_brackets(raw))) else raw
+    text = field_plain(_ruby_as_brackets(word or ''))
+    if not text or '＝' in text or '=' in text:
+        return text
+    plain, reading = card_word(word or '', reading_html)
+    return f'{plain}＝{reading}' if reading else plain
 
 def kanji_runs(word: str, reading: str) -> Optional[List[Tuple[int, int, str]]]:
     pieces = re.findall('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]+|[^㐀-䶿一-鿿豈-\ufaff々〆ヶ]+', word or '')
@@ -807,7 +808,10 @@ def reads_as(text: str, spans: Dict[int, Tuple[int, str]], word: str, reading: s
     pos = text.find(core)
     while pos >= 0:
         stop = pos + len(core)
-        if not any((s < pos < e for s, e in covered)):
+        if pos in spans and spans[pos][0] > stop:
+            if _hira(spans[pos][1]).startswith(want):
+                return True
+        elif not any((s < pos < e for s, e in covered)):
             got, i, ok = ('', pos, True)
             while i < stop:
                 if i in spans:
