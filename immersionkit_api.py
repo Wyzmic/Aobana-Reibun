@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 import requests
 DEFAULT_BASE_URL = 'https://apiv2.immersionkit.com'
-_API_USER_AGENT = 'AobanaReibun/1.2 (+https://www.immersionkit.com)'
+_API_USER_AGENT = 'AobanaReibun/1.3 (+https://www.immersionkit.com)'
 PACE_S = 2.0
 RATE_LIMIT_WAIT_S = 10.0
 RATE_LIMIT_RETRIES = 3
@@ -78,7 +78,7 @@ class ImmersionKitClient:
             raise ImmersionKitError('Immersion Kit: HTTP %d' % resp.status_code)
         return None
 
-    def search(self, q: str, exact: bool=False, category: Optional[str]=None, per_title: int=5, shortest: bool=False) -> List[Dict[str, Any]]:
+    def search(self, q: str, exact: bool=False, category: Optional[str]=None, per_title: int=5, shortest: bool=False, timeout: float=30.0) -> List[Dict[str, Any]]:
         key = (q, bool(exact), category or '', int(per_title), bool(shortest))
         if key in self._search_cache:
             return self._search_cache[key]
@@ -87,7 +87,7 @@ class ImmersionKitClient:
             params['exactMatch'] = 'true'
         if category in CATEGORIES:
             params['category'] = category
-        data = self._get('/search', params) or {}
+        data = self._get('/search', params, timeout=timeout) or {}
         examples = [e for e in data.get('examples') or [] if isinstance(e, dict)]
         self._search_cache[key] = examples
         return examples

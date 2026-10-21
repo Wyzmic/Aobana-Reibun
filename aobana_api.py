@@ -8,7 +8,7 @@ import subprocess
 import threading
 import time
 import urllib.parse as urllib_parse
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import requests
 from .discovery import DEFAULT_PYTHON, DiscoveryError, resolve
 DEFAULT_BASE_URL = 'http://127.0.0.1:5010'
@@ -42,6 +42,9 @@ class AobanaBusy(AobanaError):
     pass
 
 class AobanaNoAnswer(AobanaError):
+    pass
+
+class ReadingUnfit(Exception):
     pass
 
 def _raise_if_busy(resp):
@@ -431,6 +434,7 @@ class AobanaClient:
             raise AobanaError('Aobana cancelled the query.')
         if '＝' in query and isinstance(payload.get('reading_dropped'), list) and payload['reading_dropped']:
             self.reading_unfit += 1
+            raise ReadingUnfit(query)
         results = payload.get('results')
         if isinstance(results, list):
             for row in results:
@@ -712,20 +716,117 @@ _READING_SPLIT_RE = re.compile('[、,，/;；\\s]+')
 _HIRAGANA_RE = re.compile('[ぁ-ゖー]+')
 _READING_MARKS_RE = re.compile('[↓↑・／＼\\\\]')
 _ANKI_FURIGANA_RE = re.compile(' ?([^ \\[\\]]+)\\[([^\\[\\]]*)\\]')
+_RUBY_TAG_RE = re.compile('<ruby\\b[^>]*>(.*?)</ruby\\s*>', re.IGNORECASE | re.DOTALL)
+_RT_RE = re.compile('<rt\\b[^>]*>(.*?)</rt\\s*>', re.IGNORECASE | re.DOTALL)
+_RP_RE = re.compile('<rp\\b[^>]*>.*?</rp\\s*>', re.IGNORECASE | re.DOTALL)
+
+def _hira(text: str) -> str:
+    return ''.join((chr(ord(c) - 96) if 'ァ' <= c <= 'ヶ' else c for c in text or ''))
+
+def _ruby_as_brackets(html: str) -> str:
+
+    def one(m: 're.Match[str]') -> str:
+        inner = _RP_RE.sub('', m.group(1))
+        reading = ''.join((_ANY_TAG_RE.sub('', r) for r in _RT_RE.findall(inner)))
+        base = _ANY_TAG_RE.sub('', _RT_RE.sub('', inner))
+        return f' {base}[{reading}]' if base and reading else base
+    return _RUBY_TAG_RE.sub(one, str(html or ''))
+
+def _furigana_reading(text: str) -> str:
+
+    def one(m: 're.Match[str]') -> str:
+        base, reading = (m.group(1), m.group(2))
+        if reading.strip().isdigit():
+            return base
+        lead = _LEADING_KANA_RE.match(base).group(0)
+        if lead and (not _hira(reading).startswith(_hira(lead))):
+            return lead + reading
+        return reading
+    return _ANKI_FURIGANA_RE.sub(one, text)
+_LEADING_KANA_RE = re.compile('[ぁ-ゖァ-ヺー]*')
+
+def _first_reading(html: str) -> str:
+    text = _READING_BREAK_RE.sub('、', _ruby_as_brackets(html))
+    text = _READING_MARKS_RE.sub('', _furigana_reading(field_plain(text)))
+    text = _NASAL_RE.sub(lambda m: chr(ord(m.group(1)) + 1), text).replace('゚', '')
+    for part in _READING_SPLIT_RE.split(text):
+        reading = _hira(part)
+        if reading and _HIRAGANA_RE.fullmatch(reading):
+            return reading
+    return ''
+_READING_BREAK_RE = re.compile('<br\\s*/?>|</li\\s*>', re.IGNORECASE)
+_NASAL_RE = re.compile('([かきくけこカキクケコ])゚')
+
+def card_word(word_html: str, reading_html: str='') -> Tuple[str, str]:
+    text = field_plain(_ruby_as_brackets(word_html))
+    if not _ANKI_FURIGANA_RE.search(text):
+        word, own = (text, '')
+    else:
+        word = _ANKI_FURIGANA_RE.sub('\\1', text).strip()
+        own = _first_reading(text)
+    if not word or '＝' in word or '=' in word or (not _WORD_KANJI_RE.search(word)) or _WS_RE.search(word):
+        return (word, '')
+    return (word, _first_reading(reading_html) or own)
 
 def reading_query(word: str, reading_html: str) -> str:
-    word = (word or '').strip()
-    if not word or '＝' in word or '=' in word or (not _WORD_KANJI_RE.search(word)):
-        return word
-    if _WS_RE.search(field_plain(word)):
-        return word
-    reading = _READING_MARKS_RE.sub('', _ANKI_FURIGANA_RE.sub('\\2', field_plain(reading_html)))
-    parts = [p for p in _READING_SPLIT_RE.split(reading) if p]
-    if not parts:
-        return word
-    reading = ''.join((chr(ord(c) - 96) if 'ァ' <= c <= 'ヶ' else c for c in parts[0]))
-    plain = field_plain(word)
-    return f'{plain}＝{reading}' if plain and _HIRAGANA_RE.fullmatch(reading) else word
+    raw = (word or '').strip()
+    if not raw or '＝' in raw or '=' in raw:
+        return raw
+    plain, reading = card_word(raw, reading_html)
+    if reading:
+        return f'{plain}＝{reading}'
+    return plain if _ANKI_FURIGANA_RE.search(field_plain(_ruby_as_brackets(raw))) else raw
+
+def kanji_runs(word: str, reading: str) -> Optional[List[Tuple[int, int, str]]]:
+    pieces = re.findall('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]+|[^㐀-䶿一-鿿豈-\ufaff々〆ヶ]+', word or '')
+    if not any((_WORD_KANJI_RE.match(p) for p in pieces)):
+        return None
+    pattern = ''.join(('(.+?)' if _WORD_KANJI_RE.match(p) else re.escape(_hira(p)) for p in pieces))
+    m = re.fullmatch(pattern, _hira(reading or ''))
+    if not m:
+        return None
+    runs, pos, group = ([], 0, 1)
+    for p in pieces:
+        if _WORD_KANJI_RE.match(p):
+            runs.append((pos, pos + len(p), m.group(group)))
+            group += 1
+        pos += len(p)
+    return runs
+
+def reads_as(text: str, spans: Dict[int, Tuple[int, str]], word: str, reading: str) -> bool:
+    runs = kanji_runs(word, reading)
+    if not runs or not spans:
+        return False
+    start, end = (runs[0][0], runs[-1][1])
+    core = word[start:end]
+    want, pos = ('', start)
+    for s, e, r in runs:
+        want += _hira(word[pos:s]) + r
+        pos = e
+    covered = [(s, e) for s, (e, _r) in spans.items()]
+    pos = text.find(core)
+    while pos >= 0:
+        stop = pos + len(core)
+        if not any((s < pos < e for s, e in covered)):
+            got, i, ok = ('', pos, True)
+            while i < stop:
+                if i in spans:
+                    e, r = spans[i]
+                    if e > stop:
+                        ok = False
+                        break
+                    got += _hira(r)
+                    i = e
+                elif _WORD_KANJI_RE.match(text[i]):
+                    ok = False
+                    break
+                else:
+                    got += _hira(text[i])
+                    i += 1
+            if ok and got == want:
+                return True
+        pos = text.find(core, pos + 1)
+    return False
 _LOCATE_SPLIT_RE = re.compile('[（）「」、・\\s]')
 _WS_RE = re.compile('\\s+')
 _PAREN_FOLD = str.maketrans('()', '（）')
