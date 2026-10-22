@@ -21,13 +21,13 @@ from .anki_util import MENU_NAME, get_selected_note_ids, get_deck_note_ids, add_
 from .nadeshiko_api import NadeshikoApiClient, NadeshikoApiError, NadeshikoCancelled
 from . import immersionkit_api as ik
 from .immersionkit_api import ImmersionKitClient, ImmersionKitError
-from .aobana_api import AobanaBusy, AobanaClient, AobanaError, AobanaNoAnswer, NO_ANSWER_MESSAGE, IPlusOneRefused, NoKnownWords, ReadingUnfit, render_sentence, context_wrap, field_plain, held_sentences, sentence_key, sentence_window, split_field_lines, split_sounds, strip_context, plain_text, reading_query, card_word, reads_as, strip_book_number, strip_speaker_tags, tag_sentence, untag_sentence
+from .aobana_api import AobanaBusy, AobanaClient, AobanaError, AobanaNoAnswer, NO_ANSWER_MESSAGE, IPlusOneRefused, NoKnownWords, ReadingUnfit, render_sentence, context_wrap, field_plain, held_sentences, sentence_key, sentence_window, split_field_lines, split_sounds, strip_context, plain_text, reading_query, reading_unreadable, card_word, reads_as, strip_book_number, strip_speaker_tags, tag_sentence, untag_sentence
 _NADE_SELECTION_CHOICES = [('Random from pool', 'random'), ('Longest', 'longest'), ('Shortest', 'smallest'), ('Median', 'median'), ('Best match (no variety)', 'none'), ('Random across corpus', 'corpus_random')]
 _SUBS_SELECTION_CHOICES = [('Random from pool', 'random'), ('Longest', 'longest'), ('Shortest', 'smallest'), ('Median', 'median'), ('Best match (no variety)', 'none'), ('Random across all matches', 'corpus_random')]
 _FALLBACK_SWITCH_OF = {key: prefix + '_fallback_enabled' for prefix in ('nadeshiko', 'subs', 'immersionkit') for key in (prefix + '_fallback_pool_size', prefix + '_fallback_min_length', prefix + '_fallback_max_length', prefix + '_fallback_selection') if key != 'immersionkit_fallback_pool_size'}
 _IK_SELECTION_CHOICES = _NADE_SELECTION_CHOICES[:5]
 _IK_FALLBACK_TIP = 'When no sentence fits the main limits, pick again from the same search with the\nfallback limits below. It costs no extra request: Immersion Kit returns the whole\npool at once, so this only re-filters what already arrived. On by default.'
-_READING_FIELD_TIP = "A field with the word's reading. Every source then gives only sentences\nwhere the word is read that way."
+_READING_FIELD_TIP = "A field with the word's reading in kana (furigana and ruby work too).\nEvery source then gives only sentences where the word is read that way."
 _SUBS_LENGTH_TIP = "Counted as Aobana counts a sentence's length: the readings of furigana and\npunctuation are not counted, only the text itself."
 _PROVIDER_NADESHIKO = 'Nadeshiko'
 _PROVIDER_SUBS = 'Aobana'
@@ -1606,12 +1606,16 @@ def _subs_pick_rows(rows, mode: str, count: int):
         row = _subs_pick_row(pool, mode)
         if row is None:
             break
-        key = (row.get('media_type'), row.get('rowid'))
-        if key not in seen:
-            seen.add(key)
+        key, text = ((row.get('media_type'), row.get('rowid')), _row_text(row))
+        if key not in seen and text not in seen:
+            seen.update((key, text))
             picked.append(row)
         pool = [r for r in pool if r is not row]
     return picked
+
+def _row_text(row) -> str:
+    text = sentence_key(render_sentence(row.get('display_line') or '', furigana=False, bold=False))
+    return text or repr((row.get('media_type'), row.get('rowid')))
 
 def _subs_search_options(cfg: Dict[str, Any]) -> tuple[str, int, str]:
     mode = _subs_selection_mode(cfg)
@@ -1772,9 +1776,9 @@ def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exac
         wanted = count - len(picked)
         if wanted <= 0:
             return
-        pool = [row for row in _subs_filter_by_length(rows, lo, hi) if (row.get('media_type'), row.get('rowid')) not in seen and (allow_used or used is None or (row.get('media_type'), row.get('rowid')) not in used) and (not on_note(row))]
+        pool = [row for row in _subs_filter_by_length(rows, lo, hi) if (row.get('media_type'), row.get('rowid')) not in seen and _row_text(row) not in seen and (allow_used or used is None or ((row.get('media_type'), row.get('rowid')) not in used and _row_text(row) not in used)) and (not on_note(row))]
         for row in _subs_pick_rows(pool, mode, wanted):
-            seen.add((row.get('media_type'), row.get('rowid')))
+            seen.update(((row.get('media_type'), row.get('rowid')), _row_text(row)))
             picked.append(row)
 
     def repeats_if_short():
@@ -2590,14 +2594,18 @@ def _miss_reason(misses: List[str]) -> Optional[str]:
             return why
     return None
 _NO_READING_LINE = 'No sentence with the word in that reading'
+_BAD_READING_LINE = 'Skipped, the Reading field could not be read (write the reading in kana, e.g. たべる)'
+_BAD_READING_PRESS = 'The Reading field could not be read. Write the reading in kana, e.g. たべる.'
 _NO_READING_PRESS = 'No %s sentence with the word read %s.'
 
-def _skip_lines(filled: int, no_fields: int, deleted: int, unwritten: int) -> str:
+def _skip_lines(filled: int, no_fields: int, deleted: int, unwritten: int, bad_reading: int=0) -> str:
     msg = ''
     if filled:
         msg += f'\nSkipped, already filled (no search sent): {filled}'
     if no_fields:
         msg += f'\nSkipped, the note type has none of the fields: {no_fields}'
+    if bad_reading:
+        msg += f'\n{_BAD_READING_LINE}: {bad_reading}'
     if unwritten:
         msg += f'\nFound, but nothing to write: {unwritten}'
     if deleted:
@@ -2653,7 +2661,7 @@ def _run_nadeshiko_batch(self, nids, query_field, target_field, replace, chain=N
     trans_lang = _nade_translation_lang(self.cfg)
     lang = 'jp'
     fill_mode = 'replace' if replace else 'append' if _append_mode else 'skip'
-    skipped = {'filled': 0, 'no_fields': 0}
+    skipped = {'filled': 0, 'no_fields': 0, 'reading': 0}
     deleted = unwritten = 0
     tasks = []
     for nid in nids:
@@ -2669,12 +2677,16 @@ def _run_nadeshiko_batch(self, nids, query_field, target_field, replace, chain=N
         held = None
         if _append_mode and sent_field in note and note[sent_field].strip():
             held = {field_plain(strip_context(line)) for line in split_field_lines(note[sent_field])}
-        word, reading = card_word(q, _note_reading(note, reading_field, query_field))
+        reading_html = _note_reading(note, reading_field, query_field)
+        if reading_unreadable(reading_html, q):
+            skipped['reading'] += 1
+            continue
+        word, reading = card_word(q, reading_html)
         tasks.append((nid, q, word, held, reading))
     if not tasks:
         if empty_queries:
             self.logger.info(f'Skipped {empty_queries} notes with empty query fields.')
-        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0), parent=self)
+        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0, skipped['reading']), parent=self)
         return
     stop = threading.Event()
     fatal_error: List[str] = []
@@ -2808,7 +2820,7 @@ def _run_nadeshiko_batch(self, nids, query_field, target_field, replace, chain=N
     msg = f"Updated {updated} note{('s' if updated != 1 else '')}."
     if empty_queries:
         msg += f'\nSkipped empty: {empty_queries}'
-    msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten)
+    msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'])
     if nade_no_result > 0:
         msg += f'\nNo results: {nade_no_result}'
     if nade_no_reading > 0:
@@ -2887,7 +2899,7 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     not_iplusone: Dict[int, str] = {}
     no_iplusone = 0
     no_reading = lost_custom = 0
-    skipped = {'filled': 0, 'no_fields': 0}
+    skipped = {'filled': 0, 'no_fields': 0, 'reading': 0}
     deleted = unwritten = 0
     tasks = []
     for nid in nids:
@@ -2908,11 +2920,14 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
         if fill_mode == 'append' and sent_field in note and note[sent_field].strip():
             held = held_sentences(note[sent_field])
         reading = get_field_value(note, reading_field) if reading_field and reading_field != query_field else ''
+        if not iplusone and reading_unreadable(reading, q):
+            skipped['reading'] += 1
+            continue
         tasks.append((nid, q, reading_query(q.strip(), reading), None, held))
     if not tasks:
         if empty_queries:
             self.logger.info(f'Skipped {empty_queries} notes with empty query fields.')
-        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0), parent=self)
+        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0, skipped['reading']), parent=self)
         return
     client = _subs_make_client(self.cfg, self.logger)
     stop = threading.Event()
@@ -2965,9 +2980,9 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
                 tally['nothing_new'] = not rows and bool(held_hits)
                 tally['lost_custom'] = lost[0] if lost else None
                 if used is not None:
-                    keys = [(r.get('media_type'), r.get('rowid')) for r in rows]
-                    bump(tally, 'repeats', sum((1 for k in keys if k in used)))
-                    used.update(keys)
+                    keys = [((r.get('media_type'), r.get('rowid')), _row_text(r)) for r in rows]
+                    bump(tally, 'repeats', sum((1 for k, text in keys if k in used or text in used)))
+                    used.update((x for pair in keys for x in pair))
                 if add_context:
                     for row in rows:
                         wrapped = _subs_context_html(client, row, ctx_before, ctx_after, furigana, bold, strip_names)
@@ -3122,7 +3137,7 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
         msg = f"Updated {updated} note{('s' if updated != 1 else '')}."
         if empty_queries:
             msg += f'\nSkipped empty: {empty_queries}'
-        msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten)
+        msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'])
         if no_result:
             msg += f'\nNo results: {no_result}'
         if no_reading:
@@ -3296,7 +3311,7 @@ def _run_immersionkit_batch(self, nids, query_field, replace, chain=None):
     sent_field = fields['sentence_field']
     empty_queries = 0
     fill_mode = 'replace' if replace else 'append' if append else 'skip'
-    skipped = {'filled': 0, 'no_fields': 0}
+    skipped = {'filled': 0, 'no_fields': 0, 'reading': 0}
     deleted = unwritten = 0
     tasks = []
     for nid in nids:
@@ -3312,10 +3327,14 @@ def _run_immersionkit_batch(self, nids, query_field, replace, chain=None):
         held = None
         if append and sent_field and (sent_field in note) and note[sent_field].strip():
             held = {field_plain(strip_context(line)) for line in split_field_lines(note[sent_field])}
-        word, reading = card_word(q, _note_reading(note, reading_field, query_field))
+        reading_html = _note_reading(note, reading_field, query_field)
+        if reading_unreadable(reading_html, q):
+            skipped['reading'] += 1
+            continue
+        word, reading = card_word(q, reading_html)
         tasks.append((nid, word, held, reading))
     if not tasks:
-        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0), parent=self)
+        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0, skipped['reading']), parent=self)
         return
     stop = threading.Event()
     client = ImmersionKitClient(sleep=stop.wait)
@@ -3423,7 +3442,7 @@ def _run_immersionkit_batch(self, nids, query_field, replace, chain=None):
     msg = f"Updated {updated} note{('s' if updated != 1 else '')}."
     if empty_queries:
         msg += f'\nSkipped empty: {empty_queries}'
-    msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten)
+    msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'])
     if no_result:
         msg += f'\nNo results: {no_result}'
     if no_reading:
@@ -3682,7 +3701,11 @@ def quick_add_nadeshiko_for_current_card(mw, then=None, tried=(), notes=()) -> N
         stop = threading.Event()
         client = NadeshikoApiClient(key, base_url=base_url, stop=stop)
         reading_field = _hotkey_reading_field(fields, last_nade, cfg, query_field)
-        query_text, reading = card_word(q_text, get_field_value(note, reading_field) if reading_field else '')
+        reading_html = get_field_value(note, reading_field) if reading_field else ''
+        if reading_unreadable(reading_html, q_text):
+            _hotkey_refuse(mw, _PROVIDER_NADESHIKO, then, tried, notes, _BAD_READING_PRESS)
+            return
+        query_text, reading = card_word(q_text, reading_html)
         min_len = int(cfg.get('nadeshiko_min_length', 27))
         max_len = int(cfg.get('nadeshiko_max_length', 0)) or None
         lang = 'jp'
@@ -3781,7 +3804,11 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
             showInfo(f"Query field '{query_field}' is empty; nothing to do.")
             return
         reading_field = _hotkey_reading_field(fields, last_subs, cfg, query_field)
-        q_text = reading_query(q_text, get_field_value(note, reading_field) if reading_field else '')
+        reading_html = get_field_value(note, reading_field) if reading_field else ''
+        if not _subs_iplusone(cfg) and reading_unreadable(reading_html, q_text):
+            _hotkey_refuse(mw, _PROVIDER_SUBS, then, tried, notes, _BAD_READING_PRESS)
+            return
+        q_text = reading_query(q_text, reading_html)
         try:
             min_len = int(cfg.get('subs_min_length', 6))
         except Exception:
@@ -3915,7 +3942,11 @@ def quick_add_immersionkit_for_current_card(mw, then=None, tried=(), notes=()) -
             showInfo(f"Query field '{query_field}' is empty; nothing to do." if query_field else 'Could not determine the query field.')
             return
         reading_field = _hotkey_reading_field(names, block, cfg, query_field)
-        q_text, reading = card_word(q_text, get_field_value(note, reading_field) if reading_field else '')
+        reading_html = get_field_value(note, reading_field) if reading_field else ''
+        if reading_unreadable(reading_html, q_text):
+            _hotkey_refuse(mw, _PROVIDER_IMMERSIONKIT, then, tried, notes, _BAD_READING_PRESS)
+            return
+        q_text, reading = card_word(q_text, reading_html)
         nid = mw.reviewer.card.nid
         exact = bool(block.get('exact', False))
         stop = threading.Event()

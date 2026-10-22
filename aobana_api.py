@@ -7,7 +7,6 @@ import socket
 import subprocess
 import threading
 import time
-import unicodedata
 import urllib.parse as urllib_parse
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import requests
@@ -714,9 +713,9 @@ def field_plain(html: str) -> str:
     return html_mod.unescape(text).replace('\xa0', ' ').strip()
 _WORD_KANJI_RE = re.compile('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]')
 _READING_SPLIT_RE = re.compile('[、,，/;；\\s]+')
+_WAVE_DASHES = '〜～'
 _HIRAGANA_RE = re.compile('[ぁ-ゖー]+')
-_READING_MARKS_RE = re.compile('[↓↑・／＼\\\\ꜜ̀-ͯ]')
-_READING_NOTE_RE = re.compile('\\([^()]*\\)')
+_READING_NOTE_RE = re.compile('\\([^()]*\\)|［[^［］]*］')
 _ANKI_FURIGANA_RE = re.compile(' ?([^ \\[\\]]+)\\[([^\\[\\]]*)\\]')
 _RUBY_TAG_RE = re.compile('<ruby\\b[^>]*>(.*?)</ruby\\s*>', re.IGNORECASE | re.DOTALL)
 _RT_RE = re.compile('<rt\\b[^>]*>(.*?)</rt\\s*>', re.IGNORECASE | re.DOTALL)
@@ -737,7 +736,7 @@ def _ruby_as_brackets(html: str) -> str:
 def _furigana_reading(text: str) -> str:
 
     def one(m: 're.Match[str]') -> str:
-        base, reading = (m.group(1), m.group(2))
+        base, reading = (m.group(1), m.group(2).split(';')[0])
         if reading.strip().isdigit():
             return base
         lead = _LEADING_KANA_RE.match(base).group(0)
@@ -749,30 +748,41 @@ _LEADING_KANA_RE = re.compile('[ぁ-ゖァ-ヺー]*')
 
 def _first_reading(html: str) -> str:
     text = _READING_BREAK_RE.sub('、', _ruby_as_brackets(html))
-    text = _READING_MARKS_RE.sub('', _furigana_reading(field_plain(text)))
-    text = _READING_NOTE_RE.sub('、', unicodedata.normalize('NFKC', text))
+    text = _READING_NOTE_RE.sub('、', _furigana_reading(field_plain(text)))
     text = _NASAL_RE.sub(lambda m: chr(ord(m.group(1)) + 1), text).replace('゚', '')
     for part in _READING_SPLIT_RE.split(text):
-        reading = _hira(part)
+        reading = _hira(part.strip(_WAVE_DASHES))
         if reading and _HIRAGANA_RE.fullmatch(reading):
             return reading
     return ''
 _READING_BREAK_RE = re.compile('<br\\s*/?>|</li\\s*>|</?(?:div|p)\\b[^>]*>', re.IGNORECASE)
 _NASAL_RE = re.compile('([かきくけこカキクケコ])゚')
 
+def reading_unreadable(reading_html: str, word_html: Optional[str]=None) -> bool:
+    if word_html is not None and (not _takes_reading(_word_parts(word_html)[0])):
+        return False
+    return bool(field_plain(reading_html)) and (not _first_reading(reading_html))
+
+def word_text(html: str) -> str:
+    return _WS_RE.sub(' ', field_plain(_READING_BREAK_RE.sub(' ', _ruby_as_brackets(html))))
+
 def card_word(word_html: str, reading_html: str='') -> Tuple[str, str]:
-    text = field_plain(_ruby_as_brackets(word_html))
-    if not _ANKI_FURIGANA_RE.search(text):
-        word, own = (text, '')
-    else:
-        word = _ANKI_FURIGANA_RE.sub('\\1', text).strip()
-        own = _first_reading(text)
-    if not word or '＝' in word or '=' in word or (not _WORD_KANJI_RE.search(word)) or _WS_RE.search(word):
+    word, own = _word_parts(word_html)
+    if not _takes_reading(word):
         return (word, '')
     return (word, _first_reading(reading_html) or own)
 
+def _word_parts(word_html: str) -> Tuple[str, str]:
+    text = word_text(word_html)
+    if not _ANKI_FURIGANA_RE.search(text):
+        return (text, '')
+    return (_ANKI_FURIGANA_RE.sub('\\1', text).strip(), _first_reading(text))
+
+def _takes_reading(word: str) -> bool:
+    return bool(word) and '＝' not in word and ('=' not in word) and bool(_WORD_KANJI_RE.search(word)) and (not _WS_RE.search(word))
+
 def reading_query(word: str, reading_html: str) -> str:
-    text = field_plain(_ruby_as_brackets(word or ''))
+    text = word_text(word or '')
     if not text or '＝' in text or '=' in text:
         return text
     plain, reading = card_word(word or '', reading_html)
@@ -808,7 +818,7 @@ def reads_as(text: str, spans: Dict[int, Tuple[int, str]], word: str, reading: s
     pos = text.find(core)
     while pos >= 0:
         stop = pos + len(core)
-        if pos in spans and spans[pos][0] > stop:
+        if end == len(word) and pos in spans and (spans[pos][0] > stop):
             if _hira(spans[pos][1]).startswith(want):
                 return True
         elif not any((s < pos < e for s, e in covered)):
