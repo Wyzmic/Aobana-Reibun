@@ -100,10 +100,13 @@ Aobana source, Aobana 2.0 or later (1.9 works without Custom, the reading field 
   and one undo step for the whole run. The tab's hotkey follows the same order.
 - `No repeats` (Aobana): no sentence goes to two notes in one run.
 - `Add context` ticks `Include context` and locks it while chosen; another choice puts your own tick back.
-- The dialog remembers each source's choices and stays open after a run.
+- The dialog remembers each source's choices and stays open after a run. A run on notes of one
+  note type also keeps its fields for that type: select notes of that type again and they come
+  back. With several types selected, a field they all saved alike stays.
+- A note whose type lacks one of the chosen fields is left as it was, never partly filled.
 - The summary counts what was written and, when there are any, the notes left alone: skipped,
-  already filled (no search sent); skipped, the note type has none of the fields; found, but
-  nothing to write; deleted during the run.
+  already filled (no search sent); skipped, the note type has no field of that name (named);
+  skipped, the note type has none of the fields; found, but nothing to write; deleted during the run.
 
 Review hotkeys (change them in Settings → General; on a Mac, Cmd instead of Ctrl):
 - Aobana sentence: `Ctrl+Shift+W`
@@ -117,8 +120,8 @@ press is one undo step (Edit → Undo Aobana Reibun). If the search fails, a
 source ticked under `If none found` is tried next and the error is shown with its result, except
 when i+1 only cannot run (no known words in Aobana): then nothing else runs. They
 work in Anki's main window, not in the Browser.
-Saved hotkey changes take effect at once; a blank shortcut disables it. A field the last run
-named that the card's note type lacks is taken from Settings instead, then guessed by name
+Saved hotkey changes take effect at once; a blank shortcut disables it. The fields saved for the
+card's note type come first, then the last run's. A field that the card's note type lacks is taken from Settings instead, then guessed by name
 (Sentence1, Sentence, Text). The sentence field must differ from the query field. If no
 suitable field is on the card, set the default sentence field in Settings.
 
@@ -131,7 +134,8 @@ change in Settings and save replaces that remembered choice, and options you lea
 - `General`: *Run dialog* (whether If filled starts on Replace, and the default Reading field for
   every source) and *Reviewer hotkeys* (the three shortcuts).
 - `Aobana`: *Server*: where Aobana is (blank finds the installed one; `Browse…` picks a folder),
-  its URL, auto-start and console window. *Search*: the Subtitles, Books, Manga and Custom
+  its URL (shown, not typed: the add-on starts its own Aobana on port 5010, or the free port it
+  moved to, so your Aobana app keeps its own), auto-start and console window. *Search*: the Subtitles, Books, Manga and Custom
   corpora (Aobana searches only those ticked), i+1 only, a title limit (`Choose…` lists the
   titles in your Aobana), length limits, pool size and pick strategy. *Fallback*: its switch,
   limits and strategy, and If none found. *Fields & output*: furigana, bold, `No （names）`, No
@@ -170,7 +174,9 @@ Settings are chosen in the run dialog.
   the summary says when one of them was not used.
 - **Started for the run, then stopped.** If Aobana already answers on the add-on's port (5010),
   it is used as it is and left running. Otherwise the add-on starts it and stops it when you
-  close the summary. It stops only what it started. The console can be shown, started
+  close the summary. If another program holds 5010, or the system won't let Aobana use it, the
+  add-on moves to the next free port (5011 up to 5039, never 5020) and keeps it: Settings shows
+  it, and later runs start there. *Restore Defaults* puts 5010 back. It stops only what it started. The console can be shown, started
   minimized, or never shown (`Aobana terminal window`). The summary is always kept above it.
   The terminal is hidden by default. The review hotkey starts and stops its server per press.
 - **One request at a time.** Aobana cancels an earlier search from the same computer, so

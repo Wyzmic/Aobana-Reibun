@@ -21,7 +21,7 @@ from .anki_util import MENU_NAME, get_selected_note_ids, get_deck_note_ids, add_
 from .nadeshiko_api import NadeshikoApiClient, NadeshikoApiError, NadeshikoCancelled
 from . import immersionkit_api as ik
 from .immersionkit_api import ImmersionKitClient, ImmersionKitError
-from .aobana_api import AobanaBusy, AobanaClient, AobanaError, AobanaNoAnswer, NO_ANSWER_MESSAGE, IPlusOneRefused, NoKnownWords, ReadingUnfit, render_sentence, context_wrap, field_plain, held_sentences, sentence_key, sentence_window, split_field_lines, split_sounds, strip_context, plain_text, reading_query, reading_unreadable, card_word, reads_as, strip_book_number, strip_speaker_tags, tag_sentence, untag_sentence
+from .aobana_api import AobanaBusy, AobanaClient, AobanaError, AobanaNoAnswer, DEFAULT_BASE_URL, NO_ANSWER_MESSAGE, IPlusOneRefused, NoKnownWords, ReadingUnfit, own_port_url, render_sentence, context_wrap, field_plain, held_sentences, sentence_key, sentence_window, split_field_lines, split_sounds, strip_context, plain_text, reading_query, reading_unreadable, card_word, reads_as, strip_book_number, strip_speaker_tags, tag_sentence, untag_sentence
 _NADE_SELECTION_CHOICES = [('Random from pool', 'random'), ('Longest', 'longest'), ('Shortest', 'smallest'), ('Median', 'median'), ('Best match (no variety)', 'none'), ('Random across corpus', 'corpus_random')]
 _SUBS_SELECTION_CHOICES = [('Random from pool', 'random'), ('Longest', 'longest'), ('Shortest', 'smallest'), ('Median', 'median'), ('Best match (no variety)', 'none'), ('Random across all matches', 'corpus_random')]
 _FALLBACK_SWITCH_OF = {key: prefix + '_fallback_enabled' for prefix in ('nadeshiko', 'subs', 'immersionkit') for key in (prefix + '_fallback_pool_size', prefix + '_fallback_min_length', prefix + '_fallback_max_length', prefix + '_fallback_selection') if key != 'immersionkit_fallback_pool_size'}
@@ -144,6 +144,43 @@ def _chain_saved(provider: str, last: Optional[Dict[str, Any]]=None, cfg: Option
     on = [name for name in order if isinstance(ticked, list) and name in ticked]
     return (order, on)
 
+def _note_type_id(note) -> str:
+    mid = getattr(note, 'mid', None)
+    return str(mid) if mid else ''
+
+def _note_type_ids(col, nids) -> List[str]:
+    if not nids:
+        return []
+    try:
+        from anki.utils import ids2str
+        return [str(mid) for mid in col.db.list('select distinct mid from notes where id in ' + ids2str(nids))]
+    except Exception:
+        pass
+    seen: Dict[str, None] = {}
+    for nid in nids:
+        try:
+            mid = _note_type_id(col.get_note(nid))
+        except Exception:
+            continue
+        if mid:
+            seen[mid] = None
+    return list(seen)
+
+def _is_field_key(name: str) -> bool:
+    return name == 'query_field' or name.endswith('_field')
+
+def _typed_fields(block: Dict[str, Any], types) -> Dict[str, Any]:
+    saved = block.get('note_types') if isinstance(block.get('note_types'), dict) else {}
+    sets = [saved[t] for t in types if t and isinstance(saved.get(t), dict)]
+    if not sets:
+        return block
+    out = dict(block)
+    for name in dict.fromkeys((name for s in sets for name in s)):
+        values = [s.get(name) for s in sets]
+        if all((name in s for s in sets)) and all((v == values[0] for v in values)):
+            out[name] = values[0]
+    return out
+
 def _settings_to_last(changed: Dict[str, Any]) -> None:
     if not changed:
         return
@@ -211,6 +248,16 @@ def _pick_title(parent, titles: List[str], current: str) -> Optional[str]:
         return None
     return '' if listing.row(item) == 0 else item.text()
 
+class _UrlLabel(QLabel):
+
+    def __init__(self, url: str, parent=None) -> None:
+        self.url = url if own_port_url(url) else DEFAULT_BASE_URL
+        super().__init__(self.url, parent)
+
+    def show_url(self, url: str) -> None:
+        self.url = url if own_port_url(url) else DEFAULT_BASE_URL
+        self.setText(self.url)
+
 class _FocusWheelCombo(QComboBox):
 
     def __init__(self, parent=None) -> None:
@@ -230,7 +277,7 @@ class SettingsDialog(QDialog):
     _SPIN_RANGES = {'nadeshiko_min_length': (0, 5000, ''), 'nadeshiko_max_length': (0, 5000, 'No maximum'), 'nadeshiko_pool_size': (1, 50, ''), 'nadeshiko_fallback_pool_size': (1, 50, ''), 'nadeshiko_reading_pages': (1, 20, ''), 'nadeshiko_fallback_min_length': (0, 5000, ''), 'nadeshiko_fallback_max_length': (0, 5000, 'No maximum'), 'subs_multi_count': (1, 100, ''), 'subs_min_length': (0, 5000, ''), 'subs_max_length': (0, 5000, 'No maximum'), 'subs_pool_size': (1, _SUBS_MAX_TAKE, ''), 'subs_fallback_pool_size': (1, _SUBS_MAX_TAKE, ''), 'subs_fallback_min_length': (0, 5000, ''), 'subs_fallback_max_length': (0, 5000, 'No maximum'), 'subs_context_before': (0, _SUBS_CONTEXT_CAP, ''), 'subs_context_after': (0, _SUBS_CONTEXT_CAP, ''), 'immersionkit_min_length': (0, 5000, ''), 'immersionkit_max_length': (0, 5000, 'No maximum'), 'immersionkit_per_title': (5, 50, ''), 'immersionkit_fallback_min_length': (0, 5000, ''), 'immersionkit_fallback_max_length': (0, 5000, 'No maximum'), 'immersionkit_context_before': (0, ik.CONTEXT_CAP, ''), 'immersionkit_context_after': (0, ik.CONTEXT_CAP, ''), 'known_words_port': (1024, 65535, '')}
     _HOTKEY_KEYS = {'reviewer_hotkey_subs', 'reviewer_hotkey_nadeshiko', 'reviewer_hotkey_immersionkit'}
     _PLACEHOLDERS = {'nadeshiko_api_key': 'Paste Nadeshiko API key', 'nadeshiko_base_url': 'https://api.nadeshiko.co/v1', 'nadeshiko_sentence_field': 'Blank = choose in Run dialog', 'nadeshiko_image_field': 'Blank = choose in Run dialog', 'nadeshiko_audio_field': 'Blank = choose in Run dialog', 'nadeshiko_sentence_en_field': 'Blank = choose in Run dialog', 'subs_base_url': 'http://127.0.0.1:5010', 'subs_project_dir': 'Blank = the installed Aobana (2.0 or later)', 'subs_python': 'python', 'subs_folder': 'Blank = search everything', 'subs_sentence_field': 'Blank = choose in Run dialog', 'subs_source_field': 'Blank = choose in Run dialog', 'subs_image_field': 'Blank = choose in Run dialog', 'subs_reading_field': 'Blank = choose in Run dialog', 'reviewer_hotkey_subs': 'Ctrl+Shift+W', 'reviewer_hotkey_nadeshiko': 'Ctrl+Shift+O', 'reviewer_hotkey_immersionkit': 'Ctrl+Shift+K', 'immersionkit_sentence_field': 'Blank = choose in Run dialog', 'immersionkit_image_field': 'Blank = choose in Run dialog', 'immersionkit_audio_field': 'Blank = choose in Run dialog', 'immersionkit_translation_field': 'Blank = choose in Run dialog', 'immersionkit_source_field': 'Blank = choose in Run dialog'}
-    _TOOLTIPS = {'nadeshiko_sentence_en_field': "The sentence's translation, from Nadeshiko, goes into this field.\nThe Run dialog can choose another field, or (none), each run.", 'nadeshiko_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.\nEach fallback is a second request, counted against the monthly quota.', 'subs_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.', 'known_words_server': "While Anki is open, Aobana's Settings → Known words can list your decks\nand import the words of the decks you pick, for i+1 sentences.\nOnly this computer can ask, and nothing in your collection changes.", 'known_words_port': 'Aobana asks on this port (5020 unless you change it).\nChange it only if another program uses 5020. Aobana has no field for it:\nset "reibun_port" to the same number in Aobana\'s config.json.', 'immersionkit_fallback_enabled': _IK_FALLBACK_TIP, 'subs_if_none_found': _CHAIN_TIP, 'nadeshiko_if_none_found': _CHAIN_TIP, 'immersionkit_if_none_found': _CHAIN_TIP, 'immersionkit_context_images': "With context on, add the context lines' screenshots after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_context_audio': "With context on, add the context lines' audio after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_per_title': "Immersion Kit returns this many examples from each title (about 95 titles) in one\nrequest; they are the pool every pick is made from. 5 is the API's smallest.", 'subs_iplusone': "Only pick an i+1 sentence: the searched word is the only one in it you don't know.\nNeeds Aobana 2.0 with your known words imported (Aobana's Settings → Known words).\nA word you already know, or a query of more than one word, gets no sentence; the\nsummary says why. The Reading field is not used: 猫＝ねこ is searched as 猫.", 'nadeshiko_require_media': 'Only pick a sentence that has both a screenshot and audio. When none in the pool\nhas both, the note is left as it is and the summary says why.', 'immersionkit_require_image': 'Only pick a sentence that has a screenshot (7 of 33 sampled for 病人 had none).\nEvery Immersion Kit sentence has audio.', 'immersionkit_furigana': 'Readings from Immersion Kit, as <ruby> over the kanji. Off by default.', 'immersionkit_strip_names': "Drop a (speaker) tag when words follow it, by the same rule as Aobana's No （names）.\nImmersion Kit also uses parentheses for sound cues and glosses, so it is off by default.", 'immersionkit_context': "Put the lines before and after the sentence around it, in the sentence field, and\ntheir images and audio with the sentence's, in reading order.\nOne more request per note, so a run takes about twice as long; the media adds none.", 'nadeshiko_bold_tail': _NADE_BOLD_TAIL_TIP, 'nadeshiko_furigana': "Readings from Nadeshiko's word analysis, as <ruby> over the kanji.\nA sentence without that analysis is written as before, without readings.", 'subs_min_length': _SUBS_LENGTH_TIP, 'subs_max_length': _SUBS_LENGTH_TIP, 'subs_fallback_min_length': _SUBS_LENGTH_TIP, 'subs_fallback_max_length': _SUBS_LENGTH_TIP, 'subs_strip_book_numbers': _BOOK_NUMBERS_TIP, 'subs_folder': 'Only sentences from this title in your Aobana library: a show, a book,\na manga series. Choose… lists them; blank searches everything.', 'subs_image_field': "A Manga sentence's page image goes into this field.\nSubtitle and book sentences have no image and leave it alone.", 'subs_reading_field': _READING_FIELD_TIP, 'nadeshiko_reading_pages': 'With a reading (the Reading field, or furigana such as 的[まと] in the word field),\nNadeshiko is asked for 50 sentences at a time until one reads the word that way,\nat most this many requests per note. Each request counts against the monthly quota.\nMost words find one in the first 50, so they cost one request as before;\na rare reading can cost more.\nNone in that many: the note is left as it is. Without a reading, one request,\nand one more for the fallback search when it is ticked.', 'subs_project_dir': 'Leave blank to use the installed Aobana 2.0 or later, found automatically.\nSet it for a portable or source copy, or to choose between two installs:\nthe folder that holds the aobana folder.', 'subs_python': 'At python, an installed Aobana runs with its own Python.\nChange it only for a source copy run with a particular interpreter.', 'subs_terminal': 'Only applies when this add-on starts Aobana itself. If a server already\nanswers at the Aobana URL (port 5010 by default), it is used as it is.\n"Start minimized" is best-effort: Windows Terminal may ignore it.\nWindows only - elsewhere the server always starts in its own session.'}
+    _TOOLTIPS = {'subs_base_url': 'The add-on starts its own Aobana on this port for each run,\nso your Aobana app keeps its own port. If another program uses it,\nthe add-on moves to the next free port and shows it here.', 'nadeshiko_sentence_en_field': "The sentence's translation, from Nadeshiko, goes into this field.\nThe Run dialog can choose another field, or (none), each run.", 'nadeshiko_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.\nEach fallback is a second request, counted against the monthly quota.', 'subs_fallback_enabled': 'When the main search finds no sentence, search once more with the\nfallback settings below. Untick to leave the note as it is instead.', 'known_words_server': "While Anki is open, Aobana's Settings → Known words can list your decks\nand import the words of the decks you pick, for i+1 sentences.\nOnly this computer can ask, and nothing in your collection changes.", 'known_words_port': 'Aobana asks on this port (5020 unless you change it).\nChange it only if another program uses 5020. Aobana has no field for it:\nset "reibun_port" to the same number in Aobana\'s config.json.', 'immersionkit_fallback_enabled': _IK_FALLBACK_TIP, 'subs_if_none_found': _CHAIN_TIP, 'nadeshiko_if_none_found': _CHAIN_TIP, 'immersionkit_if_none_found': _CHAIN_TIP, 'immersionkit_context_images': "With context on, add the context lines' screenshots after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_context_audio': "With context on, add the context lines' audio after the sentence's.\nOff: only the sentence's own. The Run dialog's Context media row starts from this.", 'immersionkit_per_title': "Immersion Kit returns this many examples from each title (about 95 titles) in one\nrequest; they are the pool every pick is made from. 5 is the API's smallest.", 'subs_iplusone': "Only pick an i+1 sentence: the searched word is the only one in it you don't know.\nNeeds Aobana 2.0 with your known words imported (Aobana's Settings → Known words).\nA word you already know, or a query of more than one word, gets no sentence; the\nsummary says why. The Reading field is not used: 猫＝ねこ is searched as 猫.", 'nadeshiko_require_media': 'Only pick a sentence that has both a screenshot and audio. When none in the pool\nhas both, the note is left as it is and the summary says why.', 'immersionkit_require_image': 'Only pick a sentence that has a screenshot (7 of 33 sampled for 病人 had none).\nEvery Immersion Kit sentence has audio.', 'immersionkit_furigana': 'Readings from Immersion Kit, as <ruby> over the kanji. Off by default.', 'immersionkit_strip_names': "Drop a (speaker) tag when words follow it, by the same rule as Aobana's No （names）.\nImmersion Kit also uses parentheses for sound cues and glosses, so it is off by default.", 'immersionkit_context': "Put the lines before and after the sentence around it, in the sentence field, and\ntheir images and audio with the sentence's, in reading order.\nOne more request per note, so a run takes about twice as long; the media adds none.", 'nadeshiko_bold_tail': _NADE_BOLD_TAIL_TIP, 'nadeshiko_furigana': "Readings from Nadeshiko's word analysis, as <ruby> over the kanji.\nA sentence without that analysis is written as before, without readings.", 'subs_min_length': _SUBS_LENGTH_TIP, 'subs_max_length': _SUBS_LENGTH_TIP, 'subs_fallback_min_length': _SUBS_LENGTH_TIP, 'subs_fallback_max_length': _SUBS_LENGTH_TIP, 'subs_strip_book_numbers': _BOOK_NUMBERS_TIP, 'subs_folder': 'Only sentences from this title in your Aobana library: a show, a book,\na manga series. Choose… lists them; blank searches everything.', 'subs_image_field': "A Manga sentence's page image goes into this field.\nSubtitle and book sentences have no image and leave it alone.", 'subs_reading_field': _READING_FIELD_TIP, 'nadeshiko_reading_pages': 'With a reading (the Reading field, or furigana such as 的[まと] in the word field),\nNadeshiko is asked for 50 sentences at a time until one reads the word that way,\nat most this many requests per note. Each request counts against the monthly quota.\nMost words find one in the first 50, so they cost one request as before;\na rare reading can cost more.\nNone in that many: the note is left as it is. Without a reading, one request,\nand one more for the fallback search when it is ticked.', 'subs_project_dir': 'Leave blank to use the installed Aobana 2.0 or later, found automatically.\nSet it for a portable or source copy, or to choose between two installs:\nthe folder that holds the aobana folder.', 'subs_python': 'At python, an installed Aobana runs with its own Python.\nChange it only for a source copy run with a particular interpreter.', 'subs_terminal': 'Only applies when this add-on starts Aobana itself. If a server already\nanswers at the Aobana URL (port 5010 by default), it is used as it is.\n"Start minimized" is best-effort: Windows Terminal may ignore it.\nWindows only - elsewhere the server always starts in its own session.'}
     _BROWSE_KEYS = ('subs_project_dir',)
     _TAB_NOTES = {'General': [('What each source needs', ['<b>Aobana</b>: Aobana 2.0 or later on this computer, found automatically. No key and no quota. One search at a time; its fallback is a second search on your computer, which costs nothing.', '<b>Nadeshiko</b>: an API key. Each key may send 150 requests a minute and 5,000 a month. Each note is one request; with a reading, up to <i>Requests per note for a reading</i> (4), though most words find theirs in the first. <b>Its fallback sends a second request</b> for every note the main search left empty, which counts against the monthly quota.', "<b>Immersion Kit</b>: no key. It allows about one request every 2 seconds, so a run goes one note at a time: about 3.5 minutes per 100 notes, twice that with context (one more request per note; the context lines' images and audio add none). <b>Its fallback sends no request</b>: the one search already returned every candidate, and the fallback picks again from them. With a reading, a note none of whose candidates reads the word that way asks once more, at 50 a title. If it still rate-limits, the run stops and keeps what it found."])]}
     _HELP_LINKS = {'nadeshiko_api_key': ('Get key', 'https://nadeshiko.co/user/developer')}
@@ -374,6 +421,8 @@ class SettingsDialog(QDialog):
             return self._make_choice_widget(value, choices, editable)
         if key in self._HOTKEY_KEYS:
             return self._make_hotkey_widget(value)
+        if key == 'subs_base_url':
+            return _UrlLabel(_subs_base_url(dict(self.values, subs_base_url=value)), self)
         if isinstance(default, bool):
             widget = QCheckBox(self)
             widget.setChecked(bool(value))
@@ -454,6 +503,9 @@ class SettingsDialog(QDialog):
         try:
             from aqt.qt import QApplication
             client.ensure_running(autostart=bool(cfg.get('subs_autostart', True)), tick=QApplication.processEvents)
+            label = self.widgets.get('subs_base_url')
+            if isinstance(label, _UrlLabel):
+                label.show_url(client.base_url)
             titles = client.titles()
         except AobanaError as exc:
             showWarning(str(exc))
@@ -517,6 +569,8 @@ class SettingsDialog(QDialog):
                 widget.setText('' if value is None else str(value))
         elif isinstance(widget, QComboBox):
             self._set_combo_value(widget, str(value or ''))
+        elif isinstance(widget, _UrlLabel):
+            widget.show_url(str(value or ''))
 
     def _set_combo_value(self, widget: QComboBox, value: str) -> None:
         for idx in range(widget.count()):
@@ -528,6 +582,8 @@ class SettingsDialog(QDialog):
 
     def _value_from_widget(self, key: str, default: Any) -> Any:
         widget = self.widgets[key]
+        if key == 'subs_base_url' and (not isinstance(widget, QComboBox)):
+            return widget.url if isinstance(widget, _UrlLabel) else DEFAULT_BASE_URL
         if isinstance(widget, QKeySequenceEdit):
             return str(widget.keySequence().toString()).strip()
         if isinstance(widget, QComboBox):
@@ -690,17 +746,20 @@ class BackfillImagesDialog(QDialog):
             pass
         if hasattr(self, 'deck_combo'):
             try:
-                qconnect(self.deck_combo.currentTextChanged, lambda _=None: (_refresh_field_dropdowns(self), self._update_note_count()))
+                qconnect(self.deck_combo.currentTextChanged, lambda _=None: (_refresh_field_dropdowns(self), self._apply_saved_fields(), self._update_note_count()))
             except Exception:
                 pass
         self._restore_toggles()
+        self._apply_saved_fields()
+        self._update_note_count()
+        _toggle_provider_fields(self)
+        self._shown_provider = _selected_provider(self)
+
+    def _apply_saved_fields(self) -> None:
         for other in _PROVIDERS:
             if other != _selected_provider(self):
                 self._apply_last_settings_for_provider(other, query=False)
         self._apply_last_settings_for_provider()
-        self._update_note_count()
-        _toggle_provider_fields(self)
-        self._shown_provider = _selected_provider(self)
 
     def _query_text(self) -> str:
         combo = self.query_field
@@ -1142,6 +1201,10 @@ class BackfillImagesDialog(QDialog):
         provider = provider or _selected_provider(self)
         try:
             last = _read_last_settings() or {}
+            types = getattr(self, '_note_types', None) or []
+            for name in ('subs', 'immersionkit', 'nadeshiko'):
+                if isinstance(last.get(name), dict):
+                    last[name] = _typed_fields(last[name], types)
             fields: List[str] = []
             for i in range(self.query_field.count()):
                 fields.append(self.query_field.itemText(i))
@@ -1846,8 +1909,26 @@ def _subs_write_page_images(col, note, field: str, images: List[bytes], rowids: 
     note[field] = cur + html if append and cur and (not replace) else html
     return True
 
+def _subs_base_url(cfg: Dict[str, Any]) -> str:
+    url = str(cfg.get('subs_base_url', '') or '').strip().rstrip('/')
+    return url if own_port_url(url) else DEFAULT_BASE_URL
+
+def _keep_port(cfg: Dict[str, Any], url: str) -> None:
+    cfg['subs_base_url'] = url
+
+    def save() -> None:
+        data = _read_config()
+        data['subs_base_url'] = url
+        _write_config(data)
+        get_logger().info('Kept port %s as the Aobana URL' % url.rsplit(':', 1)[-1])
+    on_main = getattr(getattr(mw, 'taskman', None), 'run_on_main', None)
+    if callable(on_main):
+        on_main(save)
+    else:
+        save()
+
 def _subs_make_client(cfg: Dict[str, Any], logger: Any=None) -> AobanaClient:
-    return AobanaClient(base_url=str(cfg.get('subs_base_url', '') or '').strip(), project_dir=str(cfg.get('subs_project_dir', '') or '').strip(), python_exe=str(cfg.get('subs_python', 'python') or 'python').strip(), window=str(cfg.get('subs_terminal', 'hidden') or 'hidden').strip().lower(), logger=logger)
+    return AobanaClient(base_url=_subs_base_url(cfg), project_dir=str(cfg.get('subs_project_dir', '') or '').strip(), python_exe=str(cfg.get('subs_python', 'python') or 'python').strip(), window=str(cfg.get('subs_terminal', 'hidden') or 'hidden').strip().lower(), logger=logger, on_move=lambda url: _keep_port(cfg, url))
 
 def _save_note(col, note) -> None:
     if _UNDO.begin is not None:
@@ -2439,6 +2520,7 @@ def _refresh_field_dropdowns(self) -> None:
     else:
         deck_name = self.deck_combo.currentText() if hasattr(self, 'deck_combo') else ''
         nids = get_deck_note_ids(col, deck_name)
+    self._note_types = _note_type_ids(col, nids)
     fields = _collect_field_names(self, nids) if nids else []
     if not fields:
         fields = ['Front', 'Back', 'Expression', 'Picture']
@@ -2571,6 +2653,15 @@ def _nothing_to_fill(note, fields, fill_mode: str) -> Optional[str]:
         return 'filled'
     return None
 
+def _lacks(note, fields, skipped: Dict[str, Any]) -> bool:
+    gone = [f for f in dict.fromkeys(fields) if f and f not in note]
+    if not gone:
+        return False
+    skipped['missing'] = skipped.get('missing', 0) + 1
+    names = skipped.setdefault('lacking', [])
+    names.extend((f for f in gone if f not in names))
+    return True
+
 def _run_reading_field(self, chain=None) -> str:
     if chain and 'reading_field' in chain:
         return chain['reading_field']
@@ -2579,6 +2670,8 @@ def _run_reading_field(self, chain=None) -> str:
 
 def _own_reading_field(self, provider: str) -> str:
     block = (_read_last_settings() or {}).get(_PROVIDER_BLOCK.get(provider, ''))
+    if isinstance(block, dict):
+        block = _typed_fields(block, getattr(self, '_note_types', None) or [])
     if isinstance(block, dict) and 'reading_field' in block:
         return str(block.get('reading_field') or '')
     return _field_or_blank(str((getattr(self, 'cfg', None) or {}).get('subs_reading_field') or '').strip())
@@ -2598,10 +2691,17 @@ _BAD_READING_LINE = 'Skipped, the Reading field could not be read (write the rea
 _BAD_READING_PRESS = 'The Reading field could not be read. Write the reading in kana, e.g. たべる.'
 _NO_READING_PRESS = 'No %s sentence with the word read %s.'
 
-def _skip_lines(filled: int, no_fields: int, deleted: int, unwritten: int, bad_reading: int=0) -> str:
+def _skipped_lines(skipped: Dict[str, Any], deleted: int=0, unwritten: int=0) -> str:
+    return _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'], skipped.get('missing', 0), skipped.get('lacking', ()))
+
+def _skip_lines(filled: int, no_fields: int, deleted: int, unwritten: int, bad_reading: int=0, missing: int=0, lacking=()) -> str:
     msg = ''
     if filled:
         msg += f'\nSkipped, already filled (no search sent): {filled}'
+    if missing:
+        names = list(lacking)
+        named = ' or '.join(names) if len(names) < 3 else ', '.join(names[:-1]) + ' or ' + names[-1]
+        msg += f'\nSkipped, the note type has no {named} field: {missing}'
     if no_fields:
         msg += f'\nSkipped, the note type has none of the fields: {no_fields}'
     if bad_reading:
@@ -2666,6 +2766,8 @@ def _run_nadeshiko_batch(self, nids, query_field, target_field, replace, chain=N
     tasks = []
     for nid in nids:
         note = col.get_note(nid)
+        if _lacks(note, (query_field, reading_field, sent_field, img_field, aud_field, trans_field), skipped):
+            continue
         q = get_field_value(note, query_field)
         if not q:
             empty_queries += 1
@@ -2686,7 +2788,7 @@ def _run_nadeshiko_batch(self, nids, query_field, target_field, replace, chain=N
     if not tasks:
         if empty_queries:
             self.logger.info(f'Skipped {empty_queries} notes with empty query fields.')
-        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0, skipped['reading']), parent=self)
+        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skipped_lines(skipped), parent=self)
         return
     stop = threading.Event()
     fatal_error: List[str] = []
@@ -2820,7 +2922,7 @@ def _run_nadeshiko_batch(self, nids, query_field, target_field, replace, chain=N
     msg = f"Updated {updated} note{('s' if updated != 1 else '')}."
     if empty_queries:
         msg += f'\nSkipped empty: {empty_queries}'
-    msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'])
+    msg += _skipped_lines(skipped, deleted, unwritten)
     if nade_no_result > 0:
         msg += f'\nNo results: {nade_no_result}'
     if nade_no_reading > 0:
@@ -2904,9 +3006,13 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     tasks = []
     for nid in nids:
         note = col.get_note(nid)
-        if fill_mode == 'context' and sent_field in note and note[sent_field].strip():
-            hints = split_field_lines(note[source_field]) if source_field and source_field in note else []
+        if _lacks(note, (sent_field, source_field, image_field), skipped):
+            continue
+        if fill_mode == 'context' and note[sent_field].strip():
+            hints = split_field_lines(note[source_field]) if source_field else []
             tasks.append((nid, '', '', (split_field_lines(note[sent_field]), hints), None))
+            continue
+        if _lacks(note, (query_field, reading_field), skipped):
             continue
         q = get_field_value(note, query_field)
         if not q:
@@ -2927,7 +3033,7 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
     if not tasks:
         if empty_queries:
             self.logger.info(f'Skipped {empty_queries} notes with empty query fields.')
-        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0, skipped['reading']), parent=self)
+        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skipped_lines(skipped), parent=self)
         return
     client = _subs_make_client(self.cfg, self.logger)
     stop = threading.Event()
@@ -3137,7 +3243,7 @@ def _run_subs_batch(self, nids, query_field, replace, chain=None):
         msg = f"Updated {updated} note{('s' if updated != 1 else '')}."
         if empty_queries:
             msg += f'\nSkipped empty: {empty_queries}'
-        msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'])
+        msg += _skipped_lines(skipped, deleted, unwritten)
         if no_result:
             msg += f'\nNo results: {no_result}'
         if no_reading:
@@ -3316,6 +3422,8 @@ def _run_immersionkit_batch(self, nids, query_field, replace, chain=None):
     tasks = []
     for nid in nids:
         note = col.get_note(nid)
+        if _lacks(note, [query_field, reading_field] + list(fields.values()), skipped):
+            continue
         q = get_field_value(note, query_field)
         if not q:
             empty_queries += 1
@@ -3334,7 +3442,7 @@ def _run_immersionkit_batch(self, nids, query_field, replace, chain=None):
         word, reading = card_word(q, reading_html)
         tasks.append((nid, word, held, reading))
     if not tasks:
-        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skip_lines(skipped['filled'], skipped['no_fields'], 0, 0, skipped['reading']), parent=self)
+        _batch_report(chain, f'Updated 0 notes.\nSkipped empty: {empty_queries}' + _skipped_lines(skipped), parent=self)
         return
     stop = threading.Event()
     client = ImmersionKitClient(sleep=stop.wait)
@@ -3442,7 +3550,7 @@ def _run_immersionkit_batch(self, nids, query_field, replace, chain=None):
     msg = f"Updated {updated} note{('s' if updated != 1 else '')}."
     if empty_queries:
         msg += f'\nSkipped empty: {empty_queries}'
-    msg += _skip_lines(skipped['filled'], skipped['no_fields'], deleted, unwritten, skipped['reading'])
+    msg += _skipped_lines(skipped, deleted, unwritten)
     if no_result:
         msg += f'\nNo results: {no_result}'
     if no_reading:
@@ -3591,6 +3699,14 @@ def _remember_run_settings(self, provider: str, query_field: str, fields: bool=T
             kept = {name: value for name, value in saved.items() if name == 'query_field' or name.endswith('_field')}
             block = {name: value for name, value in block.items() if not (name == 'query_field' or name.endswith('_field'))}
             block.update(kept)
+        by_type = dict(saved_block.get('note_types')) if isinstance(saved_block.get('note_types'), dict) else {}
+        types = [t for t in getattr(self, '_note_types', None) or [] if t]
+        if fields and len(types) == 1:
+            own = dict(by_type.get(types[0]) or {})
+            own.update(((name, value) for name, value in block.items() if _is_field_key(name) and (shared or name != 'reading_field')))
+            by_type[types[0]] = own
+        if by_type:
+            block['note_types'] = by_type
         data[key] = block
         _write_last_settings(data)
     except Exception:
@@ -3669,6 +3785,7 @@ def quick_add_nadeshiko_for_current_card(mw, then=None, tried=(), notes=()) -> N
                 return []
         fields = _field_names(note)
         last_nade = last.get('nadeshiko', {}) if isinstance(last.get('nadeshiko'), dict) else {}
+        last_nade = _typed_fields(last_nade, [_note_type_id(note)])
         query_field = _card_field(fields, [last_nade.get('query_field')], ['Expression', 'Front'] + fields[:1])
 
         def media_field(name: str, guesses: List[str]) -> str:
@@ -3784,6 +3901,7 @@ def quick_add_subs_for_current_card(mw, then=None, tried=(), notes=()) -> None:
         cfg = _read_config()
         last = _read_last_settings() or {}
         last_subs = last.get('subs', {}) if isinstance(last.get('subs'), dict) else {}
+        last_subs = _typed_fields(last_subs, [_note_type_id(note)])
         _hotkey_options(cfg, last_subs, 'subs_', ('cat_subs', 'cat_epub', 'cat_manga', 'cat_custom', 'iplusone', 'furigana', 'bold', 'strip_names', 'context', 'strip_book_numbers'), ('multi_count', 'context_before', 'context_after'))
         exact = bool(last_subs.get('exact', False))
         try:
@@ -3917,6 +4035,7 @@ def quick_add_immersionkit_for_current_card(mw, then=None, tried=(), notes=()) -
         cfg = _read_config()
         last = _read_last_settings() or {}
         block = last.get('immersionkit', {}) if isinstance(last.get('immersionkit'), dict) else {}
+        block = _typed_fields(block, [_note_type_id(note)])
         _hotkey_options(cfg, block, 'immersionkit_', [key for key, _attr in BackfillImagesDialog._IK_TOGGLES], [key for key, _attr in BackfillImagesDialog._IK_SPINS])
         try:
             names = list(note.keys())

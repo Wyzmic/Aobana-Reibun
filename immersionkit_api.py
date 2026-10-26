@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 import requests
 DEFAULT_BASE_URL = 'https://apiv2.immersionkit.com'
-_API_USER_AGENT = 'AobanaReibun/1.5 (+https://www.immersionkit.com)'
+_API_USER_AGENT = 'AobanaReibun/1.6 (+https://www.immersionkit.com)'
 PACE_S = 2.0
 RATE_LIMIT_WAIT_S = 10.0
 RATE_LIMIT_RETRIES = 3

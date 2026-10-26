@@ -16,6 +16,40 @@ _STARTUP_TIMEOUT_S = 90.0
 _STARTUP_POLL_S = 0.05
 _PORT_CHECK_S = 0.1
 _PROBE_TIMEOUT_S = 2.0
+_SPARE_PORTS = tuple((port for port in range(5011, 5040) if port != 5020))
+
+def own_port_url(url: str) -> bool:
+    parsed = urllib_parse.urlsplit(str(url or '').strip())
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return parsed.scheme == 'http' and parsed.hostname == '127.0.0.1' and (parsed.path in ('', '/')) and (port == 5010 or port in _SPARE_PORTS)
+
+def _port_open(host: str, port: int, timeout: float) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        return sock.connect_ex((host, port)) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+def _port_bindable(host: str, port: int) -> bool:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if os.name != 'nt':
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
 _SEARCH_TIMEOUT_S = 120.0
 _LONG_SEARCH_TIMEOUT_S = 3600.0
 _CLIENT_TOKEN = 'reibun-%d' % os.getpid()
@@ -242,8 +276,10 @@ def plain_text(display_line: str) -> str:
 
 class AobanaClient:
 
-    def __init__(self, base_url: str=DEFAULT_BASE_URL, project_dir: str='', python_exe: str=DEFAULT_PYTHON, window: str='hidden', logger: Any=None) -> None:
+    def __init__(self, base_url: str=DEFAULT_BASE_URL, project_dir: str='', python_exe: str=DEFAULT_PYTHON, window: str='hidden', logger: Any=None, on_move: Optional[Callable[[str], None]]=None) -> None:
         self.base_url = (base_url or DEFAULT_BASE_URL).rstrip('/')
+        self._may_move = own_port_url(self.base_url)
+        self._on_move = on_move
         self.project_dir = str(project_dir or '').strip()
         self.python_exe = str(python_exe or DEFAULT_PYTHON).strip() or DEFAULT_PYTHON
         self.started_from = ''
@@ -272,20 +308,26 @@ class AobanaClient:
             return False
 
     def port_is_open(self, timeout: float=0.5) -> bool:
+        return _port_open(*self._address(), timeout)
+
+    def _address(self) -> Tuple[str, int]:
         parsed = urllib_parse.urlsplit(self.base_url)
-        host = parsed.hostname or '127.0.0.1'
-        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        try:
-            return sock.connect_ex((host, port)) == 0
-        except Exception:
-            return False
-        finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+        return (parsed.hostname or '127.0.0.1', parsed.port or (443 if parsed.scheme == 'https' else 80))
+
+    def _move_to_spare_port(self, why: str) -> None:
+        host, port = self._address()
+        self._may_move = False
+        for spare in _SPARE_PORTS:
+            if _port_bindable(host, spare) and (not _port_open(host, spare, _PORT_CHECK_S)):
+                self._log('info', 'Port %d %s, so Aobana starts on port %d from now on' % (port, why, spare))
+                self.base_url = 'http://%s:%d' % (host, spare)
+                if self._on_move is not None:
+                    try:
+                        self._on_move(self.base_url)
+                    except Exception as exc:
+                        self._log('error', 'Could not keep port %d: %s' % (spare, exc))
+                return
+        raise AobanaError('Port %d %s, and ports %d to %d are taken too.\nClose a program that uses one of them and try again.' % (port, why, _SPARE_PORTS[0], _SPARE_PORTS[-1]))
 
     def ensure_running(self, autostart: bool=True, tick: Optional[Callable[[], None]]=None) -> bool:
         self._check_cancelled()
@@ -298,9 +340,21 @@ class AobanaClient:
             install = resolve(self.project_dir, self.python_exe)
         except DiscoveryError as exc:
             raise AobanaError(str(exc))
-        if port_open:
+        if port_open and self._may_move:
+            self._move_to_spare_port('is taken by another program')
+        elif port_open:
             raise AobanaError('Something is already listening on %s but is not answering as Aobana.\nClose it, or start Aobana yourself, and try again.' % self.base_url)
         self._launch(install)
+        if self._wait_for_start(tick):
+            return True
+        if self._may_move and (not _port_bindable(*self._address())):
+            self._move_to_spare_port('cannot be used on this computer')
+            self._launch(install)
+            if self._wait_for_start(tick):
+                return True
+        raise AobanaError('Aobana exited while starting up. Run it by hand to see why.')
+
+    def _wait_for_start(self, tick: Optional[Callable[[], None]]) -> bool:
         deadline = time.time() + _STARTUP_TIMEOUT_S
         while time.time() < deadline:
             if self._cancelled.is_set():
@@ -310,7 +364,7 @@ class AobanaClient:
             if proc is not None and proc.poll() is not None:
                 self._owns_server = False
                 self._proc = None
-                raise AobanaError('Aobana exited while starting up. Run it by hand to see why.')
+                return False
             if self.port_is_open(timeout=_PORT_CHECK_S) and self.probe(timeout=1.0):
                 return True
             if tick:
@@ -357,7 +411,7 @@ class AobanaClient:
             raise AobanaError("Could not start Aobana with '%s':\n%s" % (install.python, exc))
         self._owns_server = True
         self.started_from = install.program_dir
-        self._log('info', 'Started Aobana (pid %s) from %s (%s), with %s' % (self._proc.pid, install.program_dir, install.where, install.python))
+        self._log('info', 'Started Aobana on port %s (pid %s) from %s (%s), with %s' % (self._address()[1], self._proc.pid, install.program_dir, install.where, install.python))
 
     def shutdown(self) -> None:
         proc, self._proc = (self._proc, None)
