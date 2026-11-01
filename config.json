@@ -89,5 +89,8 @@
  "immersionkit_source_field": null,
  "reviewer_hotkey_subs": "Ctrl+Shift+W",
  "reviewer_hotkey_nadeshiko": "Ctrl+Shift+O",
- "reviewer_hotkey_immersionkit": "Ctrl+Shift+K"
+ "reviewer_hotkey_immersionkit": "Ctrl+Shift+K",
+ "reviewer_hotkey_subs_append": "Ctrl+Alt+W",
+ "reviewer_hotkey_nadeshiko_append": "Ctrl+Alt+O",
+ "reviewer_hotkey_immersionkit_append": "Ctrl+Alt+K"
 }

@@ -59,7 +59,9 @@ Aobana source, Aobana 2.0 or later (1.9 works without Custom, the reading field 
   - `Aobana`: `Subtitles`, `Books`, `Manga` and `Custom` (your own `.txt` and `.md` files in
     Aobana); a sentence field, and optionally a source field for the episode or book title and
     an image field for a manga sentence's page.
-    `Context` puts the lines before and after the sentence into the sentence field with it.
+    `Context` puts the lines before and after the sentence into the sentence field with it,
+    a full-width space between them, none after a line that already ends in 。、！？」』） and the
+    like, and none between a book's lines.
     `i+1 only` (off by default) picks only a sentence where the searched word is the only one you
     don't know, by the known words you imported in Aobana (Settings → Known words, from your
     decks or a file). With none imported, the run stops before any note is searched and says
@@ -109,17 +111,21 @@ Aobana source, Aobana 2.0 or later (1.9 works without Custom, the reading field 
   skipped, the note type has none of the fields; found, but nothing to write; deleted during the run.
 
 Review hotkeys (change them in Settings → General; on a Mac, Cmd instead of Ctrl):
-- Aobana sentence: `Ctrl+Shift+W`
-- Nadeshiko sentence, image and audio: `Ctrl+Shift+O`
-- Immersion Kit sentence, image and audio: `Ctrl+Shift+K`
+- Aobana sentence: `Ctrl+Shift+W` replaces, `Ctrl+Alt+W` appends
+- Nadeshiko sentence, image and audio: `Ctrl+Shift+O` replaces, `Ctrl+Alt+O` appends
+- Immersion Kit sentence, image and audio: `Ctrl+Shift+K` replaces, `Ctrl+Alt+K` appends
 
 Each fills the current card with the fields and options of its tab's last run (corpora or
 categories, furigana, bold, Exact search, the Reading field, the context window, and Aobana's
-sentences per note), or Settings' before any run. A hotkey always replaces what the card had; each
-press is one undo step (Edit → Undo Aobana Reibun). If the search fails, a
+sentences per note), or Settings' before any run. A Replace hotkey replaces what the card had. An
+Append hotkey adds its sentence under the card's own, never one the card already has, and its image
+and audio after the card's; when it finds nothing, the sources under `If none found` are not tried.
+Each press is one undo step (Edit → Undo Aobana Reibun). If a Replace hotkey's search fails, a
 source ticked under `If none found` is tried next and the error is shown with its result, except
-when i+1 only cannot run (no known words in Aobana): then nothing else runs. They
-work in Anki's main window, not in the Browser.
+when i+1 only cannot run (no known words in Aobana): then nothing else runs. When a hotkey
+finds nothing, its message has a `Settings` button left of OK: it opens the run dialog on that
+card, on the hotkey's tab, to change an option and try again. Run fills the card; Cancel goes back
+to it. They work in Anki's main window, not in the Browser.
 Saved hotkey changes take effect at once; a blank shortcut disables it. The fields saved for the
 card's note type come first, then the last run's. A field that the card's note type lacks is taken from Settings instead, then guessed by name
 (Sentence1, Sentence, Text). The sentence field must differ from the query field. If no
@@ -132,7 +138,7 @@ one page in sections. The run dialog and the hotkeys remember your last run; an 
 change in Settings and save replaces that remembered choice, and options you leave alone keep it.
 
 - `General`: *Run dialog* (whether If filled starts on Replace, and the default Reading field for
-  every source) and *Reviewer hotkeys* (the three shortcuts).
+  every source), *Reviewer hotkeys: Replace* and *Reviewer hotkeys: Append* (three shortcuts each).
 - `Aobana`: *Server*: where Aobana is (blank finds the installed one; `Browse…` picks a folder),
   its URL (shown, not typed: the add-on starts its own Aobana on port 5010, or the free port it
   moved to, so your Aobana app keeps its own), auto-start and console window. *Search*: the Subtitles, Books, Manga and Custom
@@ -249,7 +255,7 @@ add-on says so when Anki starts and in Settings.
 | path | what it is |
 |---|---|
 | `__init__.py` | entry point: menus, the browser action, reviewer hotkeys |
-| `tools.py` | the run dialog, the Settings dialog, the three batches and the three hotkeys |
+| `tools.py` | the run dialog, the Settings dialog, the three batches and the six hotkeys |
 | `aobana_api.py` | the Aobana client: start/stop, search, context, locate, sentence rendering |
 | `discovery.py` | finds the installed Aobana program and its Python (no Qt) |
 | `known_server.py` | answers Aobana's known-words import on 127.0.0.1:5020 while Anki is open: your decks, read-only |

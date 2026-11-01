@@ -5,6 +5,9 @@ from .anki_util import BROWSER_NAME, MENU_NAME
 DEFAULT_HOTKEY_AOBANA = 'Ctrl+Shift+W'
 DEFAULT_HOTKEY_NADESHIKO = 'Ctrl+Shift+O'
 DEFAULT_HOTKEY_IMMERSIONKIT = 'Ctrl+Shift+K'
+DEFAULT_HOTKEY_AOBANA_APPEND = 'Ctrl+Alt+W'
+DEFAULT_HOTKEY_NADESHIKO_APPEND = 'Ctrl+Alt+O'
+DEFAULT_HOTKEY_IMMERSIONKIT_APPEND = 'Ctrl+Alt+K'
 
 def _open_tools_dialog() -> None:
     from .tools import BackfillImagesDialog
@@ -120,9 +123,16 @@ def _ensure_user_files_dir() -> None:
 
 def _start_known_words_server() -> None:
     try:
-        from .tools import _read_config
+        import json, os
         from . import known_server
-        if not known_server.apply_config(_read_config()) and known_server.LAST_ERROR:
+        try:
+            cfg = mw.addonManager.getConfig(os.path.basename(os.path.dirname(__file__))) or {}
+        except Exception:
+            cfg = {}
+        if not cfg:
+            with open(os.path.join(os.path.dirname(__file__), 'config.json'), 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+        if not known_server.apply_config(cfg if isinstance(cfg, dict) else {}) and known_server.LAST_ERROR:
             _say_port_taken(known_server)
     except Exception:
         pass
@@ -160,6 +170,9 @@ def init_addon() -> None:
         hotkey_subs = DEFAULT_HOTKEY_AOBANA
         hotkey_nade = DEFAULT_HOTKEY_NADESHIKO
         hotkey_ik = DEFAULT_HOTKEY_IMMERSIONKIT
+        hotkey_append = DEFAULT_HOTKEY_AOBANA_APPEND
+        hotkey_nade_append = DEFAULT_HOTKEY_NADESHIKO_APPEND
+        hotkey_ik_append = DEFAULT_HOTKEY_IMMERSIONKIT_APPEND
         try:
             try:
                 pkg = os.path.basename(os.path.dirname(__file__))
@@ -176,9 +189,21 @@ def init_addon() -> None:
                     hotkey_nade = str(cfg.get('reviewer_hotkey_nadeshiko') or '').strip()
                 if 'reviewer_hotkey_immersionkit' in cfg:
                     hotkey_ik = str(cfg.get('reviewer_hotkey_immersionkit') or '').strip()
+                if 'reviewer_hotkey_subs_append' in cfg:
+                    hotkey_append = str(cfg.get('reviewer_hotkey_subs_append') or '').strip()
+                if 'reviewer_hotkey_nadeshiko_append' in cfg:
+                    hotkey_nade_append = str(cfg.get('reviewer_hotkey_nadeshiko_append') or '').strip()
+                if 'reviewer_hotkey_immersionkit_append' in cfg:
+                    hotkey_ik_append = str(cfg.get('reviewer_hotkey_immersionkit_append') or '').strip()
         except Exception:
             pass
-        from .tools import quick_add_immersionkit_for_current_card, quick_add_nadeshiko_for_current_card, quick_add_subs_for_current_card
+
+        def quick(name: str):
+
+            def run() -> None:
+                from . import tools
+                getattr(tools, name)(mw)
+            return run
 
         def _bind_hotkey(key: str, sequence: str, callback):
             shortcut = QShortcut(QKeySequence(sequence), mw)
@@ -190,7 +215,7 @@ def init_addon() -> None:
             except Exception:
                 pass
             return shortcut
-        shortcuts = [_bind_hotkey('reviewer_hotkey_nadeshiko', hotkey_nade, lambda: quick_add_nadeshiko_for_current_card(mw)), _bind_hotkey('reviewer_hotkey_subs', hotkey_subs, lambda: quick_add_subs_for_current_card(mw)), _bind_hotkey('reviewer_hotkey_immersionkit', hotkey_ik, lambda: quick_add_immersionkit_for_current_card(mw))]
+        shortcuts = [_bind_hotkey('reviewer_hotkey_nadeshiko', hotkey_nade, quick('quick_add_nadeshiko_for_current_card')), _bind_hotkey('reviewer_hotkey_subs', hotkey_subs, quick('quick_add_subs_for_current_card')), _bind_hotkey('reviewer_hotkey_immersionkit', hotkey_ik, quick('quick_add_immersionkit_for_current_card')), _bind_hotkey('reviewer_hotkey_subs_append', hotkey_append, quick('quick_append_subs_for_current_card')), _bind_hotkey('reviewer_hotkey_nadeshiko_append', hotkey_nade_append, quick('quick_append_nadeshiko_for_current_card')), _bind_hotkey('reviewer_hotkey_immersionkit_append', hotkey_ik_append, quick('quick_append_immersionkit_for_current_card'))]
         try:
             if not hasattr(mw, '_aobana_reibun_shortcuts'):
                 mw._aobana_reibun_shortcuts = []

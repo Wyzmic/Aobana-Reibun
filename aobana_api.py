@@ -101,7 +101,7 @@ class SearchResults(list):
 _ADJACENT_BOLD_RE = re.compile('</b><b>', re.IGNORECASE)
 _CLASSED_BOLD_RE = re.compile('<b\\s[^>]*>', re.IGNORECASE)
 _RUBY_CLASS_RE = re.compile('<ruby[^>]*>', re.IGNORECASE)
-_RT_RE = re.compile('<rt>.*?</rt>', re.IGNORECASE | re.DOTALL)
+_RT_RE = re.compile('<rt\\b[^>]*>(.*?)</rt\\s*>', re.IGNORECASE | re.DOTALL)
 _RUBY_CLOSE_RE = re.compile('</ruby>', re.IGNORECASE)
 _ANY_TAG_RE = re.compile('<[^>]+>')
 _SOUND_TAG_RE = re.compile('\\[sound:[^\\]]*\\]')
@@ -683,9 +683,10 @@ class AobanaClient:
             raise AobanaError('Aobana locate returned a response that was not JSON.')
         return rows if isinstance(rows, list) else []
 CONTEXT_JOINER = '\u3000'
+CONTEXT_OWN_GAP = tuple('。、，．！？：；」』）】〕］｝》〉〙〗')
 CONTEXT_CLASS = 'subs-context'
 SENTENCE_CLASS = 'subs-sentence'
-_CONTEXT_SPAN_RE = re.compile('<span class="%s">.*?</span>' % CONTEXT_CLASS, re.DOTALL)
+_CONTEXT_OPEN_RE = re.compile('<span class="%s">' % CONTEXT_CLASS)
 _SENTENCE_ATTRS_RE = re.compile('<span\\b[^>]*\\bclass="[^"]*\\b%s\\b[^"]*"[^>]*>' % SENTENCE_CLASS, re.IGNORECASE)
 _DATA_MEDIA_RE = re.compile('\\bdata-media="([^"]+)"', re.IGNORECASE)
 _DATA_ROWID_RE = re.compile('\\bdata-rowid="(\\d+)"', re.IGNORECASE)
@@ -743,14 +744,33 @@ def context_wrap(sentence_html: str, lines: List[str], match: int, furigana: boo
     joiner = '' if media == 'epub' else CONTEXT_JOINER
     out = ''
     if before:
-        out += '<span class="%s">%s%s</span>' % (CONTEXT_CLASS, joiner.join(before), joiner)
+        out += '<span class="%s">%s%s</span>' % (CONTEXT_CLASS, _join_lines(before, joiner), _gap(before[-1], joiner))
     out += sentence_html
     if after:
-        out += '<span class="%s">%s%s</span>' % (CONTEXT_CLASS, joiner, joiner.join(after))
+        out += '<span class="%s">%s%s</span>' % (CONTEXT_CLASS, _gap(sentence_html, joiner), _join_lines(after, joiner))
     return out
 
+def _gap(line: str, joiner: str) -> str:
+    return '' if field_plain(line).endswith(CONTEXT_OWN_GAP) else joiner
+
+def _join_lines(lines: List[str], joiner: str) -> str:
+    return ''.join((line + (_gap(line, joiner) if i < len(lines) - 1 else '') for i, line in enumerate(lines)))
+
 def strip_context(field_line: str) -> str:
-    return _CONTEXT_SPAN_RE.sub('', str(field_line or ''))
+    s = str(field_line or '')
+    out, at = ([], 0)
+    for m in _CONTEXT_OPEN_RE.finditer(s):
+        if m.start() < at:
+            continue
+        out.append(s[at:m.start()])
+        depth, at = (1, len(s))
+        for t in _SPAN_TOKEN_RE.finditer(s, m.end()):
+            depth += -1 if t.group(0).startswith('</') else 1
+            if depth == 0:
+                at = t.end()
+                break
+    out.append(s[at:])
+    return ''.join(out)
 
 def split_sounds(field_line: str) -> tuple:
     line = str(field_line or '')
@@ -765,14 +785,14 @@ def field_plain(html: str) -> str:
     text = _READING_RE.sub('', text)
     text = _ANY_TAG_RE.sub('', text)
     return html_mod.unescape(text).replace('\xa0', ' ').strip()
-_WORD_KANJI_RE = re.compile('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]')
+_KANJI_CHARS = '\\u4E00-\\u9FFF\\u3400-\\u4DBF\\uF900-\\uFAFF\\U00020000-\\U000323AF\\U0002F800-\\U0002FA1F\\u3005\\U0001B000-\\U0001B16F〆ヵヶ'
+_WORD_KANJI_RE = re.compile('[%s]' % _KANJI_CHARS)
 _READING_SPLIT_RE = re.compile('[、,，/;；\\s]+')
 _WAVE_DASHES = '〜～'
 _HIRAGANA_RE = re.compile('[ぁ-ゖー]+')
 _READING_NOTE_RE = re.compile('\\([^()]*\\)|［[^［］]*］')
 _ANKI_FURIGANA_RE = re.compile(' ?([^ \\[\\]]+)\\[([^\\[\\]]*)\\]')
 _RUBY_TAG_RE = re.compile('<ruby\\b[^>]*>(.*?)</ruby\\s*>', re.IGNORECASE | re.DOTALL)
-_RT_RE = re.compile('<rt\\b[^>]*>(.*?)</rt\\s*>', re.IGNORECASE | re.DOTALL)
 _RP_RE = re.compile('<rp\\b[^>]*>.*?</rp\\s*>', re.IGNORECASE | re.DOTALL)
 
 def _hira(text: str) -> str:
@@ -843,7 +863,7 @@ def reading_query(word: str, reading_html: str) -> str:
     return f'{plain}＝{reading}' if reading else plain
 
 def kanji_runs(word: str, reading: str) -> Optional[List[Tuple[int, int, str]]]:
-    pieces = re.findall('[㐀-䶿一-鿿豈-\ufaff々〆ヶ]+|[^㐀-䶿一-鿿豈-\ufaff々〆ヶ]+', word or '')
+    pieces = re.findall('[%s]+|[^%s]+' % (_KANJI_CHARS, _KANJI_CHARS), word or '')
     if not any((_WORD_KANJI_RE.match(p) for p in pieces)):
         return None
     pattern = ''.join(('(.+?)' if _WORD_KANJI_RE.match(p) else re.escape(_hira(p)) for p in pieces))

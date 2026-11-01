@@ -2,19 +2,12 @@ from __future__ import annotations
 import os
 import re
 import time
-from dataclasses import dataclass
 from typing import Iterable, List, Optional, Tuple
-ADDON_NAME = 'Aobana Reibun'
 MENU_NAME = 'Aobana Reibun'
 BROWSER_NAME = 'Aobana Reibun'
 from aqt import mw
 from anki.notes import Note
 from anki.collection import Collection
-
-@dataclass
-class NoteTarget:
-    nid: int
-    note_type_name: str
 
 def get_selected_note_ids(browser) -> List[int]:
     try:
