@@ -37,7 +37,7 @@ def list_decks(col) -> List[Dict[str, Any]]:
     counts = {}
     for did, cards, notes in col.db.all('select case when odid then odid else did end as d, count(), count(distinct nid) from cards group by d'):
         counts[int(did)] = (int(cards), int(notes))
-    decks = [(int(row.id), str(row.name)) for row in _deck_rows(col) if not _is_filtered(col, int(row.id))]
+    decks = [(int(row.id), str(row.name)) for row in col.decks.all_names_and_ids(include_filtered=False)]
     ids = {name: did for did, name in decks}
     parents = {name.rsplit('::', 1)[0] for _did, name in decks if '::' in name}
     subtree: Dict[int, set] = {ids[name]: set() for name in parents if name in ids}

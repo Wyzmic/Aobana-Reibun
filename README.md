@@ -102,9 +102,10 @@ Aobana source, Aobana 2.0 or later (1.9 works without Custom, the reading field 
   and one undo step for the whole run. The tab's hotkey follows the same order.
 - `No repeats` (Aobana): no sentence goes to two notes in one run.
 - `Add context` ticks `Include context` and locks it while chosen; another choice puts your own tick back.
-- The dialog remembers each source's choices and stays open after a run. A run on notes of one
-  note type also keeps its fields for that type: select notes of that type again and they come
-  back. With several types selected, a field they all saved alike stays.
+- The dialog remembers each source's choices and stays open after a run. A field you pick is
+  kept when you switch tabs, and saved when you run or close the dialog. On notes of one note type
+  the fields are kept for that type: select notes of that type again and they come back. With
+  several types selected, a field they all saved alike stays.
 - A note whose type lacks one of the chosen fields is left as it was, never partly filled.
 - The summary counts what was written and, when there are any, the notes left alone: skipped,
   already filled (no search sent); skipped, the note type has no field of that name (named);
@@ -115,9 +116,9 @@ Review hotkeys (change them in Settings → General; on a Mac, Cmd instead of Ct
 - Nadeshiko sentence, image and audio: `Ctrl+Shift+O` replaces, `Ctrl+Alt+O` appends
 - Immersion Kit sentence, image and audio: `Ctrl+Shift+K` replaces, `Ctrl+Alt+K` appends
 
-Each fills the current card with the fields and options of its tab's last run (corpora or
-categories, furigana, bold, Exact search, the Reading field, the context window, and Aobana's
-sentences per note), or Settings' before any run. A Replace hotkey replaces what the card had. An
+Each fills the current card with the fields and options its tab last saved, on Run or when the
+run dialog closed (corpora or categories, furigana, bold, Exact search, the Reading field, the
+context window, and Aobana's sentences per note), or Settings' before any run. A Replace hotkey replaces what the card had. An
 Append hotkey adds its sentence under the card's own, never one the card already has, and its image
 and audio after the card's; when it finds nothing, the sources under `If none found` are not tried.
 Each press is one undo step (Edit → Undo Aobana Reibun). If a Replace hotkey's search fails, a
@@ -127,14 +128,14 @@ finds nothing, its message has a `Settings` button left of OK: it opens the run 
 card, on the hotkey's tab, to change an option and try again. Run fills the card; Cancel goes back
 to it. They work in Anki's main window, not in the Browser.
 Saved hotkey changes take effect at once; a blank shortcut disables it. The fields saved for the
-card's note type come first, then the last run's. A field that the card's note type lacks is taken from Settings instead, then guessed by name
+card's note type come first, then the tab's last saved ones. A field that the card's note type lacks is taken from Settings instead, then guessed by name
 (Sentence1, Sentence, Text). The sentence field must differ from the query field. If no
 suitable field is on the card, set the default sentence field in Settings.
 
 ## Settings
 
 `Tools → Aobana Reibun → Settings`, or the add-on's `Config` button. Four tabs, each
-one page in sections. The run dialog and the hotkeys remember your last run; an option you
+one page in sections. The run dialog and the hotkeys remember your last choices; an option you
 change in Settings and save replaces that remembered choice, and options you leave alone keep it.
 
 - `General`: *Run dialog* (whether If filled starts on Replace, and the default Reading field for

@@ -760,10 +760,28 @@ class BackfillImagesDialog(QDialog):
         self._shown_provider = _selected_provider(self)
 
     def _apply_saved_fields(self) -> None:
+        self._held_fields = {}
+        self._first_fields = {}
         for other in _PROVIDERS:
             if other != _selected_provider(self):
                 self._apply_last_settings_for_provider(other, query=False)
         self._apply_last_settings_for_provider()
+        self._note_first_fields()
+
+    def _note_first_fields(self) -> None:
+        shown, first = (_selected_provider(self), getattr(self, '_first_fields', None))
+        if first is None:
+            first = self._first_fields = {}
+        if shown not in first:
+            first[shown] = _field_choices(self, shown, self._query_text())
+
+    def _picked_fields(self) -> Dict[str, Dict[str, str]]:
+        shown, picked = (_selected_provider(self), {})
+        for provider, first in (getattr(self, '_first_fields', None) or {}).items():
+            now = _field_choices(self, shown, self._query_text()) if provider == shown else (getattr(self, '_held_fields', None) or {}).get(provider)
+            if now and now != first:
+                picked[provider] = now
+        return picked
 
     def _query_text(self) -> str:
         combo = self.query_field
@@ -772,15 +790,19 @@ class BackfillImagesDialog(QDialog):
     def _switch_provider(self) -> None:
         old = getattr(self, '_shown_provider', None)
         if old and old != _selected_provider(self):
+            self._held_fields[old] = _field_choices(self, old, self._query_text())
             _remember_run_settings(self, old, self._query_text(), fields=False)
         self._shown_provider = _selected_provider(self)
         self._apply_last_settings_for_provider()
+        self._note_first_fields()
         self._restore_shared(self._shown_provider)
         _toggle_provider_fields(self)
 
     def done(self, result) -> None:
         try:
             _remember_run_settings(self, _selected_provider(self), self._query_text(), fields=False)
+            for provider, fields in self._picked_fields().items():
+                _remember_fields(self, provider, fields)
         except Exception:
             pass
         super().done(result)
@@ -1211,6 +1233,10 @@ class BackfillImagesDialog(QDialog):
             for name in ('subs', 'immersionkit', 'nadeshiko'):
                 if isinstance(last.get(name), dict):
                     last[name] = _typed_fields(last[name], types)
+            held = (getattr(self, '_held_fields', None) or {}).get(provider)
+            if held:
+                block = _PROVIDER_BLOCK[provider]
+                last[block] = dict(last[block] if isinstance(last.get(block), dict) else {}, **held)
             fields: List[str] = []
             for i in range(self.query_field.count()):
                 fields.append(self.query_field.itemText(i))
@@ -1806,8 +1832,11 @@ def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exac
         query = word.group(1)
     if learn:
         exact = False
+    asked: Dict[tuple, Any] = {}
 
     def search(limit, sort):
+        if (limit, sort) in asked:
+            return asked[limit, sort]
         rows = client.search(query, exact=exact, media=media, limit=limit, sort=sort, folder=folder, **learn)
         if learn:
             info = getattr(rows, 'learn', None)
@@ -1816,7 +1845,8 @@ def _subs_fetch_rows(client: AobanaClient, cfg: Dict[str, Any], query: str, exac
         if diagnostics is not None:
             diagnostics.append({'has_results': bool(rows), 'outside_media': getattr(rows, 'outside_media', []), 'global_total': getattr(rows, 'global_total', None)})
         rows = _subs_apply_tag_mode(_subs_keep_media(rows, cfg), strip_names)
-        return _subs_apply_book_numbers(rows, book_numbers)
+        asked[limit, sort] = _subs_apply_book_numbers(rows, book_numbers)
+        return asked[limit, sort]
     picked: List[Dict[str, Any]] = []
     seen = set()
     stages = []
@@ -2690,6 +2720,9 @@ def _run_reading_field(self, chain=None) -> str:
     return _field_or_blank(combo.currentText()) if combo is not None else ''
 
 def _own_reading_field(self, provider: str) -> str:
+    held = (getattr(self, '_held_fields', None) or {}).get(provider) or {}
+    if 'reading_field' in held:
+        return held['reading_field']
     block = (_read_last_settings() or {}).get(_PROVIDER_BLOCK.get(provider, ''))
     if isinstance(block, dict):
         block = _typed_fields(block, getattr(self, '_note_types', None) or [])
@@ -3674,30 +3707,35 @@ def _on_run(self) -> None:
     else:
         _dispatch()
 
+def _field_choices(self, provider: str, query_field: str) -> Dict[str, str]:
+    if provider == _PROVIDER_SUBS:
+        source = self.subs_source_field.currentText().strip()
+        block = {'query_field': query_field, 'sentence_field': self.subs_sentence_field.currentText().strip(), 'source_field': '' if source == _NO_FIELD else source, 'image_field': _field_or_blank(self.subs_image_field.currentText())}
+    elif provider == _PROVIDER_IMMERSIONKIT:
+        block = {'query_field': query_field}
+        for name, combo in self._ik_field_combos():
+            block[name] = _field_or_blank(combo.currentText())
+    else:
+        block = {'query_field': query_field, 'image_field': _field_or_blank(self.nade_image_field.currentText()), 'audio_field': _field_or_blank(self.nade_audio_field.currentText()), 'sentence_field': self.nade_sentence_field.currentText().strip(), 'translation_field': _field_or_blank(self.nade_translation_field.currentText())}
+    if hasattr(self, 'subs_reading_field'):
+        block['reading_field'] = _field_or_blank(self.subs_reading_field.currentText())
+    return block
+
 def _remember_run_settings(self, provider: str, query_field: str, fields: bool=True, shared: bool=True) -> None:
     try:
         data = _read_last_settings() or {}
         data['last_provider'] = provider
         fill = _fill_mode(self)
+        block = _field_choices(self, provider, query_field)
         if provider == _PROVIDER_SUBS:
-            source = self.subs_source_field.currentText().strip()
-            block = {'query_field': query_field, 'sentence_field': self.subs_sentence_field.currentText().strip(), 'source_field': '' if source == _NO_FIELD else source, 'image_field': _field_or_blank(self.subs_image_field.currentText())}
-            if hasattr(self, 'subs_reading_field'):
-                block['reading_field'] = _field_or_blank(self.subs_reading_field.currentText())
             toggles, spins = (BackfillImagesDialog._SUBS_TOGGLES, BackfillImagesDialog._SUBS_SPINS)
             key = 'subs'
         elif provider == _PROVIDER_IMMERSIONKIT:
-            block = {'query_field': query_field}
-            for name, combo in self._ik_field_combos():
-                block[name] = _field_or_blank(combo.currentText())
             toggles, spins = (BackfillImagesDialog._IK_TOGGLES, BackfillImagesDialog._IK_SPINS)
             key = 'immersionkit'
         else:
-            block = {'query_field': query_field, 'image_field': _field_or_blank(self.nade_image_field.currentText()), 'audio_field': _field_or_blank(self.nade_audio_field.currentText()), 'sentence_field': self.nade_sentence_field.currentText().strip(), 'translation_field': _field_or_blank(self.nade_translation_field.currentText())}
             toggles, spins = (BackfillImagesDialog._NADE_TOGGLES, [])
             key = 'nadeshiko'
-        if provider != _PROVIDER_SUBS and hasattr(self, 'subs_reading_field'):
-            block['reading_field'] = _field_or_blank(self.subs_reading_field.currentText())
         for name, attr in toggles:
             block[name] = bool(getattr(self, attr).isChecked())
         for name, attr in spins:
@@ -3707,9 +3745,13 @@ def _remember_run_settings(self, provider: str, query_field: str, fields: bool=T
         block['exact'] = self._exact_choice() if hasattr(self, '_exact_choice') else bool(self.exact_chk.isChecked())
         block['if_filled'] = fill
         saved_block = data.get(key) if isinstance(data.get(key), dict) else {}
+        held = (getattr(self, '_held_fields', None) or {}).get(provider) or {}
+        own_reading = shared or 'reading_field' in held
         if not shared:
             for name in ('exact', 'if_filled', 'reading_field'):
-                if name in saved_block:
+                if name == 'reading_field' and own_reading:
+                    block[name] = held[name]
+                elif name in saved_block:
                     block[name] = saved_block[name]
                 else:
                     block.pop(name, None)
@@ -3726,9 +3768,25 @@ def _remember_run_settings(self, provider: str, query_field: str, fields: bool=T
         types = [t for t in getattr(self, '_note_types', None) or [] if t]
         if fields and len(types) == 1:
             own = dict(by_type.get(types[0]) or {})
-            own.update(((name, value) for name, value in block.items() if _is_field_key(name) and (shared or name != 'reading_field')))
+            own.update(((name, value) for name, value in block.items() if _is_field_key(name) and (own_reading or name != 'reading_field')))
             by_type[types[0]] = own
         if by_type:
+            block['note_types'] = by_type
+        data[key] = block
+        _write_last_settings(data)
+    except Exception:
+        pass
+
+def _remember_fields(self, provider: str, fields: Dict[str, str]) -> None:
+    try:
+        data = _read_last_settings() or {}
+        key = _PROVIDER_BLOCK[provider]
+        block = dict(data.get(key)) if isinstance(data.get(key), dict) else {}
+        block.update(fields)
+        types = [t for t in getattr(self, '_note_types', None) or [] if t]
+        if len(types) == 1:
+            by_type = dict(block.get('note_types')) if isinstance(block.get('note_types'), dict) else {}
+            by_type[types[0]] = dict(by_type.get(types[0]) or {}, **fields)
             block['note_types'] = by_type
         data[key] = block
         _write_last_settings(data)
