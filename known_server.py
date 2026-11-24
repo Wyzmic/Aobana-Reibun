@@ -13,6 +13,7 @@ MAIN_THREAD_TIMEOUT_S = 60.0
 RULES = ('mature', 'reviewed', 'all')
 DEFAULT_IVL = 21
 APP = 'aobana-reibun'
+FEATURES = ('skip_suspended',)
 _SERVER = None
 _LOCK = threading.Lock()
 
@@ -124,6 +125,9 @@ def known_words(col, request: Dict[str, Any]) -> Dict[str, Any]:
         raise RequestError(400, 'bad_deck')
     ids, missing = _chosen_ids(col, deck_ids, bool(request.get('subdecks', True)))
     rule = rule_query(request.get('rule') or {})
+    if 'skip_suspended' in request and (not isinstance(request['skip_suspended'], bool)):
+        raise RequestError(400, 'bad_rule')
+    skip_suspended = bool(request.get('skip_suspended', False))
     mapping = {}
     for key, pair in (request.get('fields') or {}).items():
         if not isinstance(pair, dict):
@@ -133,8 +137,8 @@ def known_words(col, request: Dict[str, Any]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             raise RequestError(400, 'bad_fields')
     if not ids:
-        return {'query': '', 'notes': 0, 'skipped': 0, 'missing': missing, 'entries': []}
-    query = _deck_query(ids) + (' ' + rule if rule else '')
+        return {'query': '', 'notes': 0, 'skipped': 0, 'missing': missing, 'entries': [], 'skip_suspended': skip_suspended}
+    query = _deck_query(ids) + (' ' + rule if rule else '') + (' -is:suspended' if skip_suspended else '')
     nids = sorted(set((int(n) for n in col.find_notes(query))))
     entries, skipped = ([], 0)
     places = {}
@@ -156,7 +160,7 @@ def known_words(col, request: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             reading = values[reading_at] if reading_at is not None and reading_at < len(values) else ''
             entries.append([values[word_at], reading])
-    return {'query': query, 'notes': len(nids), 'skipped': skipped, 'missing': missing, 'entries': entries}
+    return {'query': query, 'notes': len(nids), 'skipped': skipped, 'missing': missing, 'entries': entries, 'skip_suspended': skip_suspended}
 
 def _manifest_version() -> str:
     try:
@@ -242,7 +246,7 @@ def make_handler(port: int, get_collection: Callable[[], Any], run_on_main: Call
                 def work():
                     col, profile = get_collection()
                     if path == '/hello':
-                        return {'app': APP, 'version': _manifest_version(), 'protocol': PROTOCOL, 'profile': profile, 'ready': col is not None}
+                        return {'app': APP, 'version': _manifest_version(), 'protocol': PROTOCOL, 'profile': profile, 'ready': col is not None, 'features': list(FEATURES)}
                     if col is None:
                         raise RequestError(503, 'no_collection')
                     if path == '/decks':

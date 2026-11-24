@@ -785,7 +785,7 @@ def field_plain(html: str) -> str:
     text = _READING_RE.sub('', text)
     text = _ANY_TAG_RE.sub('', text)
     return html_mod.unescape(text).replace('\xa0', ' ').strip()
-_KANJI_CHARS = '\\u4E00-\\u9FFF\\u3400-\\u4DBF\\uF900-\\uFAFF\\U00020000-\\U000323AF\\U0002F800-\\U0002FA1F\\u3005\\U0001B000-\\U0001B16F〆ヵヶ'
+_KANJI_CHARS = '\\u4E00-\\u9FFF\\u3400-\\u4DBF\\uF900-\\uFAFF\\U00020000-\\U0003347F\\U0002F800-\\U0002FA1F\\u3005\\U0001B000-\\U0001B16F〆ヵヶ'
 _WORD_KANJI_RE = re.compile('[%s]' % _KANJI_CHARS)
 _READING_SPLIT_RE = re.compile('[、,，/;；\\s]+')
 _WAVE_DASHES = '〜～'
